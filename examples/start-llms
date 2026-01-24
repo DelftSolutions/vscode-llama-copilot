@@ -1,0 +1,3 @@
+#!/bin/bash
+
+/opt/local/bin/llama-server --port 8013 --models-preset ./models.ini

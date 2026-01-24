@@ -1,0 +1,138 @@
+{
+	"name": "llama-copilot",
+	"publisher": "delft-solutions",
+	"displayName": "Copilot for llama-server LLMs",
+	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
+	"version": "1.0.0",
+	"icon": "llama1-icon.png",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.104.0"
+	},
+	"activationEvents": [
+		"onLanguageModelAccess:llama-server"
+	],
+	"categories": [
+		"AI",
+		"Chat"
+	],
+	"contributes": {
+		"languageModelChatProviders": [
+			{
+				"vendor": "llama-server",
+				"displayName": "LLaMA Server",
+				"managementCommand": "llamaCopilot.openEndpointSettings"
+			}
+		],
+		"commands": [
+			{
+				"command": "llamaCopilot.openEndpointSettings",
+				"title": "Open Endpoint Settings"
+			}
+		],
+		"configuration": {
+			"title": "LLaMA Server",
+			"properties": {
+				"llamaCopilot.endpoints": {
+					"type": "object",
+					"description": "Configuration for llama-server endpoints. Each key is an endpoint identifier, and models will be suffixed with @<identifier> (e.g., model-name@local)",
+					"additionalProperties": {
+						"type": "object",
+						"properties": {
+							"url": {
+								"type": "string",
+								"description": "URL of the llama-server instance (e.g., http://localhost:8013)"
+							},
+							"apiToken": {
+								"type": "string",
+								"description": "Optional API token for authenticated endpoints"
+							},
+							"headers": {
+								"type": "object",
+								"description": "Optional headers to add to all requests for this endpoint",
+								"additionalProperties": {
+									"type": "string"
+								}
+							},
+							"requestBody": {
+								"type": "object",
+								"description": "Optional JSON properties to merge into request body for this endpoint"
+							},
+							"models": {
+								"type": "object",
+								"description": "Per-model configuration. Each key is a model ID (without @endpoint suffix)",
+								"additionalProperties": {
+									"type": "object",
+									"properties": {
+										"headers": {
+											"type": "object",
+											"description": "Optional headers specific to this model (merged with endpoint headers, model headers take precedence)",
+											"additionalProperties": {
+												"type": "string"
+											}
+										},
+										"requestBody": {
+											"type": "object",
+											"description": "Optional JSON properties to merge into request body for this model (merged with endpoint requestBody, model properties take precedence)"
+										},
+										"contextSize": {
+											"type": "number",
+											"description": "Override context size for this model (in tokens)"
+										},
+										"maxOutputTokens": {
+											"type": "number",
+											"description": "Override maximum output tokens for this model"
+										},
+										"capabilities": {
+											"type": "object",
+											"description": "Override capabilities for this model",
+											"properties": {
+												"imageInput": {
+													"type": "boolean",
+													"description": "Whether image input is supported by the model"
+												},
+												"toolCalling": {
+													"description": "Whether tool calling is supported. Can be a boolean or a number (maximum number of tools)",
+													"oneOf": [
+														{
+															"type": "boolean"
+														},
+														{
+															"type": "number"
+														}
+													]
+												}
+											}
+										}
+									}
+								}
+							}
+						},
+						"required": ["url"]
+					}
+				}
+			}
+		}
+	},
+	"main": "./out/extension.js",
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"download-api": "dts dev",
+		"postdownload-api": "dts main",
+		"postinstall": "npm run download-api",
+		"compile": "tsc -p ./",
+		"lint": "eslint",
+		"watch": "tsc -watch -p ./"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.13.0",
+		"@stylistic/eslint-plugin": "^2.9.0",
+		"@types/node": "^22",
+		"@types/vscode": "^1.104.0",
+		"@vscode/dts": "^0.4.1",
+		"@vscode/vsce": "^3.7.1",
+		"eslint": "^9.13.0",
+		"typescript": "^5.9.2",
+		"typescript-eslint": "^8.39.0"
+	}
+}
