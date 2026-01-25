@@ -1,12 +1,21 @@
 import * as vscode from 'vscode';
 
 let outputChannel: vscode.OutputChannel | undefined;
+const CONFIG_SECTION = 'llamaCopilot';
 
 /**
  * Initialize the logger with a VS Code output channel
  */
 export function initializeLogger(channel: vscode.OutputChannel): void {
 	outputChannel = channel;
+}
+
+/**
+ * Check if a debug setting is enabled
+ */
+function isDebugEnabled(setting: string): boolean {
+	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+	return config.get<boolean>(`debug.${setting}`, false);
 }
 
 /**
@@ -80,18 +89,6 @@ function sanitizeForLogging(obj: unknown): unknown {
 			sanitized[key] = attachmentTruncated.length > 100 
 				? `${attachmentTruncated.substring(0, 100)}... (${attachmentTruncated.length} chars total)`
 				: attachmentTruncated;
-		} else if (key === 'tool_calls' && Array.isArray(value)) {
-			// Highlight tool calls
-			sanitized[key] = `[${value.length} tool call(s)]`;
-		} else if (key === 'tools' && Array.isArray(value)) {
-			// Show tool names
-			sanitized[key] = value.map((tool: unknown) => {
-				if (typeof tool === 'object' && tool !== null && 'function' in tool) {
-					const func = (tool as { function?: { name?: string } }).function;
-					return func?.name || 'unknown';
-				}
-				return 'unknown';
-			});
 		} else {
 			sanitized[key] = sanitizeForLogging(value);
 		}
@@ -118,6 +115,10 @@ export function logRequest(
 	headers?: Record<string, string>,
 	body?: unknown
 ): void {
+	if (!isDebugEnabled('modelListFetch')) {
+		return;
+	}
+	
 	const timestamp = getTimestamp();
 	log(`[${timestamp}] ${method} ${url}`);
 	
@@ -138,6 +139,10 @@ export function logResponse(
 	statusText: string,
 	body?: unknown
 ): void {
+	if (!isDebugEnabled('modelListFetch')) {
+		return;
+	}
+	
 	const timestamp = getTimestamp();
 	log(`[${timestamp}] Response: ${status} ${statusText}`);
 	
@@ -164,6 +169,10 @@ export function logError(error: Error | string, context?: string): void {
  * Log a streaming request start
  */
 export function logStreamStart(method: string, url: string, body?: unknown): void {
+	if (!isDebugEnabled('completion')) {
+		return;
+	}
+	
 	const timestamp = getTimestamp();
 	log(`[${timestamp}] ${method} ${url} (Streaming)`);
 	
@@ -185,6 +194,113 @@ export function logStreamStart(method: string, url: string, body?: unknown): voi
  * Log a streaming response status
  */
 export function logStreamResponse(status: number, statusText: string): void {
+	if (!isDebugEnabled('completion')) {
+		return;
+	}
+	
 	const timestamp = getTimestamp();
 	log(`[${timestamp}] Stream Response: ${status} ${statusText}`);
+}
+
+/**
+ * Log tokenization request
+ */
+export function logTokenizeRequest(
+	url: string,
+	headers?: Record<string, string>,
+	body?: unknown
+): void {
+	if (!isDebugEnabled('tokenization')) {
+		return;
+	}
+	
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] POST ${url} (Tokenization)`);
+	
+	if (headers && Object.keys(headers).length > 0) {
+		log(`Headers: ${formatJson(headers)}`);
+	}
+	
+	if (body !== undefined) {
+		log(`Request Body: ${formatJson(body)}`);
+	}
+}
+
+/**
+ * Log tokenization response
+ */
+export function logTokenizeResponse(
+	status: number,
+	statusText: string,
+	tokenCount?: number
+): void {
+	if (!isDebugEnabled('tokenization')) {
+		return;
+	}
+	
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] Tokenization Response: ${status} ${statusText}`);
+	
+	if (tokenCount !== undefined) {
+		log(`Token Count: ${tokenCount}`);
+	}
+}
+
+/**
+ * Log rules matching operation
+ */
+export function logRulesMatching(
+	operation: string,
+	details?: Record<string, unknown>
+): void {
+	if (!isDebugEnabled('rulesMatching')) {
+		return;
+	}
+	
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] Rules Matching: ${operation}`);
+	
+	if (details) {
+		log(`Details: ${formatJson(details)}`);
+	}
+}
+
+/**
+ * Log tool call
+ */
+export function logToolCall(
+	toolName: string,
+	callId: string,
+	input?: unknown
+): void {
+	if (!isDebugEnabled('toolCalls')) {
+		return;
+	}
+	
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] Tool Call: ${toolName} (ID: ${callId})`);
+	
+	if (input !== undefined) {
+		log(`Input: ${formatJson(input)}`);
+	}
+}
+
+/**
+ * Log tool call result
+ */
+export function logToolCallResult(
+	toolName: string,
+	callId: string,
+	result?: unknown
+): void {
+	if (!isDebugEnabled('toolCalls')) {
+		return;
+	}
+	
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] Tool Call Result: ${toolName} (ID: ${callId})`);
+	
+	if (result !== undefined) {
+		log(`Result: ${formatJson(result)}`);
+	}
 }

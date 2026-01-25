@@ -14,7 +14,7 @@ import {
 	OpenAITool,
 	OpenAIToolCall,
 } from './types';
-import { logRequest, logResponse, logError, logStreamStart, logStreamResponse } from './logger';
+import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
 
 /**
  * Fetch available models from llama-server
@@ -288,6 +288,7 @@ export async function* streamChatCompletion(
 		max_tokens?: number;
 		reasoning_format?: 'deepseek';
 		parse_tool_calls?: boolean;
+		parallel_tool_calls?: boolean;
 		[key: string]: unknown;
 	} = {
 		model: modelId,
@@ -296,6 +297,7 @@ export async function* streamChatCompletion(
 		max_tokens: options.max_tokens,
 		reasoning_format: 'deepseek', // Enable thinking token extraction
 		parse_tool_calls: true, // Enable tool call parsing
+		parallel_tool_calls: true, // Enable parallel tool calls
 	};
 
 	if (openAITools && openAITools.length > 0) {
@@ -534,7 +536,7 @@ export async function tokenize(
 	}
 
 	try {
-		logRequest('POST', url, headers, requestBody);
+		logTokenizeRequest(url, headers, requestBody);
 		const response = await fetch(url, {
 			method: 'POST',
 			headers,
@@ -547,14 +549,10 @@ export async function tokenize(
 		}
 
 		const result = (await response.json()) as TokenizeResponse;
-		logResponse(response.status, response.statusText, result);
+		const tokenCount = Array.isArray(result.tokens) ? result.tokens.length : 0;
+		logTokenizeResponse(response.status, response.statusText, tokenCount);
 
-		if (Array.isArray(result.tokens)) {
-			return result.tokens.length;
-		}
-
-		// If with_pieces was true, tokens would be objects
-		return 0;
+		return tokenCount;
 	} catch (error) {
 		if (error instanceof Error && error.message.includes('Failed to tokenize')) {
 			throw error;

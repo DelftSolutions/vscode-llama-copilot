@@ -9,6 +9,36 @@ const CONFIG_ENDPOINTS = 'endpoints';
 let provider: llamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
 
+/**
+ * Normalize endpoint URL by stripping trailing `/` or `/v1`
+ */
+function normalizeEndpointUrl(url: string): string {
+	let normalized = url.trim();
+	// Strip trailing `/v1`
+	if (normalized.endsWith('/v1')) {
+		normalized = normalized.slice(0, -3);
+	}
+	// Strip trailing `/`
+	if (normalized.endsWith('/')) {
+		normalized = normalized.slice(0, -1);
+	}
+	return normalized;
+}
+
+/**
+ * Normalize all endpoint URLs in the configuration
+ */
+function normalizeEndpoints(endpoints: EndpointsConfig): EndpointsConfig {
+	const normalized: EndpointsConfig = {};
+	for (const [key, config] of Object.entries(endpoints)) {
+		normalized[key] = {
+			...config,
+			url: normalizeEndpointUrl(config.url),
+		};
+	}
+	return normalized;
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	// Create output channel for API logging
 	const outputChannel = vscode.window.createOutputChannel('LLaMA Server API');
@@ -55,7 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Get endpoints from configuration and register initial provider
 	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
 	const endpoints = config.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
-	registerProvider(endpoints);
+	registerProvider(normalizeEndpoints(endpoints));
 
 	// Listen for configuration changes
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
@@ -65,7 +95,7 @@ export function activate(context: vscode.ExtensionContext) {
 				.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
 
 			// Unregister old provider and register new one with updated endpoints
-			const newProvider = registerProvider(newEndpoints);
+			const newProvider = registerProvider(normalizeEndpoints(newEndpoints));
 			
 			// Fire change event on the new provider asynchronously to ensure
 			// the provider is fully registered before notifying VSCode

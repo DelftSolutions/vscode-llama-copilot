@@ -6,6 +6,10 @@
 	"version": "1.0.0",
 	"icon": "llama1-icon.png",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/DelftSolutions/vscode-llama-copilot"
+	},
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -110,6 +114,36 @@
 						},
 						"required": ["url"]
 					}
+				},
+				"llamaCopilot.enableCursorRules": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable cursor rules tool for LLM access to project rules from .cursor/rules/"
+				},
+				"llamaCopilot.debug.modelListFetch": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for model list fetch operations"
+				},
+				"llamaCopilot.debug.completion": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for completion requests"
+				},
+				"llamaCopilot.debug.tokenization": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for tokenization operations"
+				},
+				"llamaCopilot.debug.rulesMatching": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for rules matching operations"
+				},
+				"llamaCopilot.debug.toolCalls": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for tool calls"
 				}
 			}
 		}

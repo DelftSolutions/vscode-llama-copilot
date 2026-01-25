@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import { fetchModels, streamChatCompletion, tokenize } from './llamaClient';
 import { EndpointsConfig, Model } from './types';
+import { RuleManager } from './cursor-rules/ruleManager';
+import { CursorRulesTool } from './cursor-rules/index';
+import { findClosestMatch } from './cursor-rules/levenshtein';
+import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
 
 export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvider {
 	private endpoints: EndpointsConfig;
@@ -9,9 +13,15 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	// Event emitter for model information changes
 	private readonly onDidChangeLanguageModelChatInformationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this.onDidChangeLanguageModelChatInformationEmitter.event;
+	// Cursor rules manager
+	private ruleManager: RuleManager | null = null;
+	private rulesTool: CursorRulesTool | null = null;
+	private rulesInitialized = false;
+	private rulesLoadingPromise: Promise<void> | null = null;
 
 	constructor(endpoints: EndpointsConfig) {
 		this.endpoints = endpoints;
+		this.rulesLoadingPromise = this.initializeRules();
 	}
 
 	/**
@@ -20,6 +30,120 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	dispose(): void {
 		this.onDidChangeLanguageModelChatInformationEmitter.dispose();
 	}
+
+	/**
+	 * Initialize cursor rules manager if feature is enabled
+	 */
+	private async initializeRules(): Promise<void> {
+		const config = vscode.workspace.getConfiguration('llamaCopilot');
+		const enabled = config.get<boolean>('enableCursorRules', true);
+		
+		if (!enabled) {
+			return;
+		}
+
+		try {
+			this.ruleManager = new RuleManager();
+			await this.ruleManager.initialize();
+			this.rulesTool = new CursorRulesTool(this.ruleManager);
+			this.rulesInitialized = true;
+		} catch (error) {
+			console.error('Failed to initialize cursor rules:', error);
+		}
+	}
+
+	/**
+	 * Check if cursor rules feature is enabled
+	 */
+	private isCursorRulesEnabled(): boolean {
+		if (!this.rulesInitialized) {
+			return false;
+		}
+		const config = vscode.workspace.getConfiguration('llamaCopilot');
+		return config.get<boolean>('enableCursorRules', true);
+	}
+
+	/**
+	 * Create cursor rules tool if rules are available for the session
+	 */
+	private async createCursorRulesTool(
+		messages: vscode.LanguageModelChatMessage[],
+		modelId: string
+	): Promise<vscode.LanguageModelChatTool | null> {
+		// Wait for initialization if still in progress
+		if (this.rulesLoadingPromise) {
+			try {
+				await this.rulesLoadingPromise;
+				this.rulesLoadingPromise = null;
+			} catch (error) {
+				console.error('Failed to wait for rules initialization:', error);
+				this.rulesLoadingPromise = null;
+			}
+		}
+
+		if (!this.isCursorRulesEnabled() || !this.ruleManager || !this.rulesTool) {
+			logRulesMatching('Rules disabled or not initialized', { 
+				enabled: this.isCursorRulesEnabled(), 
+				initialized: !!this.ruleManager,
+				ruleCount: this.ruleManager?.getRuleCount() ?? 0
+			});
+			return null;
+		}
+
+		// Match rules for this session
+		logRulesMatching('Starting rules matching', { 
+			messageCount: messages.length,
+			modelId 
+		});
+		
+		const matchedRules = this.ruleManager.matchRulesForSession(messages, modelId);
+		const availableRules = this.ruleManager.getAvailableRules(messages, modelId);
+
+		logRulesMatching('Rules matching completed', {
+			matchedRuleCount: matchedRules.size,
+			availableRuleCount: availableRules.length,
+			availableRules: availableRules.map(r => r.path)
+		});
+
+		if (availableRules.length === 0) {
+			logRulesMatching('No rules available for session');
+			return null;
+		}
+
+		// Build tool description
+		const ruleList = availableRules.map(rule => ({
+			path: rule.path,
+			description: rule.metadata.description || rule.path,
+		}));
+		const description = this.rulesTool.getDescription(ruleList);
+
+		if (!description) {
+			logRulesMatching('Tool description generation failed');
+			return null;
+		}
+
+		logRulesMatching('Cursor rules tool created', {
+			toolName: 'get-project-rule',
+			ruleCount: availableRules.length
+		});
+
+		// Create LanguageModelChatTool
+		return {
+			name: 'get-project-rule',
+			description: description,
+			inputSchema: {
+				type: 'object',
+				properties: {
+					rule: {
+						type: 'string',
+						description: 'Comma-separated list of rule names to fetch (e.g., "rule:style-guidelines.mdc,rule:extra/example.md"). The "rule:" prefix is optional.',
+					},
+				},
+				required: ['rule'],
+			},
+		};
+	}
+
 
 	/**
 	 * Fire the change event to notify VS Code that model information has changed
@@ -366,6 +490,110 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	}
 
 	/**
+	 * Build assistant message text asking about rules
+	 */
+	private buildAssistantMessageForRules(ruleNames: string[]): string {
+		if (ruleNames.length === 0) {
+			return 'Please tell me about the project rules.';
+		}
+		
+		const uniqueRuleNames = [...new Set(ruleNames)];
+		if (uniqueRuleNames.length === 1) {
+			return `Please tell me about rule ${uniqueRuleNames[0]}.`;
+		}
+		
+		const lastRule = uniqueRuleNames[uniqueRuleNames.length - 1];
+		const otherRules = uniqueRuleNames.slice(0, -1);
+		return `Please tell me about rules ${otherRules.join(', ')}, and ${lastRule}.`;
+	}
+
+	/**
+	 * Build user message with tool results
+	 */
+	private buildUserMessageWithResults(results: string[]): string {
+		return results.join('\n\n');
+	}
+
+	/**
+	 * Build updated message history with assistant and user messages
+	 */
+	private buildUpdatedMessageHistory(
+		originalMessages: vscode.LanguageModelChatMessage[],
+		assistantText: string,
+		userText: string
+	): vscode.LanguageModelChatMessage[] {
+		const updatedMessages = [...originalMessages];
+		
+		// Add assistant message asking about rules
+		updatedMessages.push(
+			new vscode.LanguageModelChatMessage(
+				vscode.LanguageModelChatMessageRole.Assistant,
+				[new vscode.LanguageModelTextPart(assistantText)]
+			)
+		);
+		
+		// Add user message with tool results
+		updatedMessages.push(
+			new vscode.LanguageModelChatMessage(
+				vscode.LanguageModelChatMessageRole.User,
+				[new vscode.LanguageModelTextPart(userText)]
+			)
+		);
+		
+		return updatedMessages;
+	}
+
+	/**
+	 * Make follow-up streaming request after reporting text messages
+	 */
+	private async makeFollowUpRequest(
+		serverUrl: string,
+		modelId: string,
+		messages: vscode.LanguageModelChatMessage[],
+		maxTokens: number,
+		apiToken: string | undefined,
+		headers: Record<string, string>,
+		requestBody: Record<string, unknown>,
+		tools: readonly vscode.LanguageModelChatTool[],
+		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+		token: vscode.CancellationToken
+	): Promise<void> {
+		const completionOptions = {
+			tools: tools,
+			max_tokens: maxTokens,
+			getThinkingTokens: undefined,
+			isNewUserMessage: false,
+		};
+
+		// Stream follow-up response
+		for await (const chunk of streamChatCompletion(
+			serverUrl,
+			modelId,
+			messages,
+			completionOptions,
+			apiToken,
+			headers,
+			requestBody
+		)) {
+			// Check for cancellation
+			if (token.isCancellationRequested) {
+				return;
+			}
+
+			// Handle different chunk types
+			if (chunk.type === 'text') {
+				progress.report(new vscode.LanguageModelTextPart(chunk.content));
+			} else if (chunk.type === 'toolCall') {
+				// Report tool calls normally (these should be other tools, not get-project-rule)
+				progress.report(chunk.toolCall);
+			} else if (chunk.type === 'thinking') {
+				progress.report(new vscode.LanguageModelThinkingPart(chunk.content));
+			}
+		}
+	}
+
+
+	/**
 	 * Provide chat response using OpenAI-compatible /v1/chat/completions endpoint
 	 */
 	async provideLanguageModelChatResponse(
@@ -402,8 +630,15 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			}
 
 			const maxTokens = model.maxOutputTokens;
+			
+			// Add cursor rules tool if available
+			const cursorRulesTool = await this.createCursorRulesTool(messages, model.id);
+			const tools: readonly vscode.LanguageModelChatTool[] = cursorRulesTool
+				? [...(options.tools || []), cursorRulesTool]
+				: options.tools || [];
+
 			const completionOptions = {
-				tools: options.tools,
+				tools: tools,
 				max_tokens: maxTokens,
 				getThinkingTokens: includeThinkingTokens
 					? (msg: vscode.LanguageModelChatMessage) => this.getThinkingTokensForMessage(msg)
@@ -413,6 +648,13 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 
 			// Track thinking tokens for the current response
 			let currentThinkingTokens = '';
+			
+			// Track cursor rules tool calls to convert to text messages
+			const cursorRulesToolCalls: Array<{
+				toolCall: vscode.LanguageModelToolCallPart;
+				result: string;
+				ruleNames: string[];
+			}> = [];
 
 			// Stream chat completion
 			for await (const chunk of streamChatCompletion(
@@ -433,7 +675,84 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				if (chunk.type === 'text') {
 					progress.report(new vscode.LanguageModelTextPart(chunk.content));
 				} else if (chunk.type === 'toolCall') {
-					progress.report(chunk.toolCall);
+					logToolCall(chunk.toolCall.name, chunk.toolCall.callId, chunk.toolCall.input);
+					
+					// Check if this is our cursor rules tool and handle it specially
+					if (chunk.toolCall.name === 'get-project-rule' && this.rulesTool && this.ruleManager) {
+						// Collect tool call and invoke handler, but don't report it as a tool call
+						try {
+							const ruleNames = (chunk.toolCall.input as { rule: string }).rule.split(',').map(r => r.trim());
+							const results: Array<{ description: string; content: string }> = [];
+							
+							for (const ruleName of ruleNames) {
+								// Remove "rule:" prefix if present
+								const normalizedName = ruleName.replace(/^rule:/, '');
+								
+								// Try to find the rule
+								let rule = this.ruleManager.findRule(normalizedName);
+								
+								// If not found, try fuzzy matching
+								if (!rule) {
+									const allRules = this.ruleManager.getAllRules();
+									const candidateNames = allRules.map(r => r.path);
+									const closest = findClosestMatch(normalizedName, candidateNames, 8);
+									
+									if (closest) {
+										rule = this.ruleManager.findRule(closest);
+									}
+								}
+								
+								if (rule) {
+									const description = rule.metadata.description || rule.path;
+									results.push({
+										description,
+										content: rule.content,
+									});
+								} else {
+									// Rule not found
+									results.push({
+										description: normalizedName,
+										content: '<empty file>',
+									});
+								}
+							}
+							
+							// Format result
+							const formattedResults = results
+								.map(r => `# ${r.description}\n\n\`\`\`\`\n${r.content}\n\`\`\`\``)
+								.join('\n\n');
+							
+							logToolCallResult(chunk.toolCall.name, chunk.toolCall.callId, {
+								ruleCount: results.length,
+								rulesFound: results.map(r => r.description)
+							});
+							
+							// Store for later conversion to text messages
+							cursorRulesToolCalls.push({
+								toolCall: chunk.toolCall,
+								result: formattedResults,
+								ruleNames: ruleNames.map(r => r.replace(/^rule:/, ''))
+							});
+						} catch (error) {
+							console.error('Failed to invoke cursor rules tool:', error);
+							logToolCallResult(chunk.toolCall.name, chunk.toolCall.callId, {
+								error: error instanceof Error ? error.message : 'Unknown error'
+							});
+							// Store error result
+							cursorRulesToolCalls.push({
+								toolCall: chunk.toolCall,
+								result: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+								ruleNames: []
+							});
+						}
+					} else {
+						// Report other tool calls normally (let VS Code handle them)
+						progress.report(chunk.toolCall);
+						logToolCallResult(chunk.toolCall.name, chunk.toolCall.callId, {
+							note: 'Tool call handled by VS Code'
+						});
+					}
+					
 					// Store thinking tokens with the tool call message
 					// We'll include them when the tool results come back
 					if (currentThinkingTokens) {
@@ -447,6 +766,40 @@ export class llamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					// Accumulate thinking tokens for tool call association
 					currentThinkingTokens += chunk.content;
 				}
+			}
+			
+			// After initial stream completes, if we have cursor rules tool calls, convert them to text messages
+			if (cursorRulesToolCalls.length > 0) {
+				// Build assistant and user messages
+				const assistantText = this.buildAssistantMessageForRules(
+					cursorRulesToolCalls.flatMap(tc => tc.ruleNames)
+				);
+				const userText = this.buildUserMessageWithResults(
+					cursorRulesToolCalls.map(tc => tc.result)
+				);
+				
+				// Report assistant text
+				progress.report(new vscode.LanguageModelTextPart(assistantText));
+				
+				// Report user text
+				progress.report(new vscode.LanguageModelTextPart(userText));
+				
+				// Build updated message history and make follow-up request
+				const updatedMessages = this.buildUpdatedMessageHistory(messages, assistantText, userText);
+				
+				// Make follow-up request (without cursor rules tool to prevent loops)
+				await this.makeFollowUpRequest(
+					endpointConfig.url,
+					baseModelId,
+					updatedMessages,
+					model.maxOutputTokens,
+					endpointConfig.apiToken,
+					mergedHeaders,
+					mergedRequestBody,
+					options.tools?.filter(t => t.name !== 'get-project-rule') || [],
+					progress,
+					token
+				);
 			}
 
 			// If we have remaining thinking tokens after streaming completes,

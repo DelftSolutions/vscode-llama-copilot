@@ -305,6 +305,110 @@ Configure model capabilities:
 - `imageInput` (boolean): Whether the model supports image input
 - `toolCalling` (boolean | number): Whether the model supports tool calling. Can be a boolean or a number (maximum number of tools)
 
+## Cursor Rules Integration
+
+The extension includes a built-in tool that gives the LLM access to your project's cursor rules from `.cursor/rules/`. This allows the model to access project-specific guidelines, coding standards, and best practices automatically.
+
+### How It Works
+
+1. **Rule Discovery**: The extension automatically reads all `.md` and `.mdc` files from `.cursor/rules/` in your workspace
+2. **Glob Matching**: Rules with glob patterns in their frontmatter are matched against:
+   - File attachments (e.g., `@src/logger.ts:32`)
+   - User messages
+   - Assistant messages
+   - Tool call parameters (first 1024 bytes)
+3. **Session Scoping**: Available rules are tracked per chat session. When a glob matches, that rule becomes available for that conversation
+4. **Tool Exposure**: When rules are available, a `get-project-rule` tool is automatically exposed to the LLM
+
+### Rule File Format
+
+Rules can be simple markdown files (`.md`) or markdown files with frontmatter (`.mdc`):
+
+**Simple rule** (`.md`):
+```markdown
+# Coding Guidelines
+
+Always use TypeScript strict mode.
+Prefer async/await over promises.
+```
+
+**Rule with frontmatter** (`.mdc`):
+```markdown
+---
+description: "TypeScript coding standards"
+globs: ["**/*.ts", "**/*.tsx"]
+alwaysApply: false
+---
+
+# TypeScript Guidelines
+
+- Use strict mode
+- Prefer interfaces over types for object shapes
+- Use const assertions where appropriate
+```
+
+### Glob Pattern Matching
+
+Glob patterns are converted to regex patterns:
+- `*` matches any characters except path separators: `[a-zA-Z0-9.~@+=_|-]`
+- `**` matches any characters including path separators: `[a-zA-Z0-9.~@+=_|\/-]`
+- Both Windows (`\`) and Unix (`/`) path separators are supported
+
+### Tool Usage
+
+When rules are available, the LLM can call the `get-project-rule` tool:
+
+```
+get-project-rule(rule: "coding-guidelines.md,style/markdown.mdc")
+```
+
+The tool supports:
+- Comma-separated rule names
+- Optional `rule:` prefix (e.g., `rule:style.md` or just `style.md`)
+- Fuzzy matching: If a rule isn't found exactly, the closest match (within Levenshtein distance 8) is used
+- Returns `<empty file>` if no matching rule is found
+
+### Configuration
+
+Enable or disable the cursor rules feature in settings:
+
+```json
+{
+  "llamaCopilot.enableCursorRules": true
+}
+```
+
+When disabled:
+- Rules are not parsed
+- The tool is not exposed to the LLM
+- No performance overhead from rule matching
+
+### Example
+
+1. Create a rule file `.cursor/rules/typescript.md`:
+```markdown
+# TypeScript Rules
+
+Always use explicit return types for functions.
+Prefer `interface` over `type` for object shapes.
+```
+
+2. Create a rule with glob matching `.cursor/rules/react-components.mdc`:
+```markdown
+---
+description: "React component guidelines"
+globs: ["**/*.tsx", "src/components/**"]
+---
+
+# React Components
+
+- Use functional components with hooks
+- Extract complex logic into custom hooks
+- Use React.memo for expensive components
+```
+
+3. When you mention a file matching the glob (e.g., `@src/components/Button.tsx`), the rule becomes available to the LLM automatically
+
 ## Usage
 
 ### Selecting Models

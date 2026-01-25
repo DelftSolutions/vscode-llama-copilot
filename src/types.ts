@@ -136,6 +136,7 @@ export interface OpenAIChatCompletionRequest {
 	reasoning_format?: 'none' | 'deepseek' | 'deepseek-legacy';
 	thinking_forced_open?: boolean;
 	parse_tool_calls?: boolean;
+	parallel_tool_calls?: boolean;
 }
 
 /**
