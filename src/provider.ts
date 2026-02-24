@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { streamChatCompletion, tokenize } from './llamaClient';
+import { streamChatCompletion, getTokenCount } from './llamaClient';
 import { EndpointsConfig } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
@@ -495,7 +495,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			}
 
 			const requestTimeoutMs = getRequestTimeoutMs();
-			return await tokenize(
+			return await getTokenCount(
 				endpointConfig.url,
 				baseModelId,
 				content,

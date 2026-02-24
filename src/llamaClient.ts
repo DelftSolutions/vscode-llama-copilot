@@ -24,6 +24,7 @@ import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, l
 
 import { normalizeFetchError } from './errorUtils';
 import { parseServerError, formatServerErrorMessage } from './serverErrorUtils';
+import * as crypto from 'crypto';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 1200 * 1000;
 
@@ -581,6 +582,74 @@ export async function* streamChatCompletion(
 			url
 		);
 	}
+}
+
+const TOKEN_COUNT_CACHE_MAX = 3000;
+const tokenCountCache = new Map<string, number>();
+
+function canonicalStringify(obj: Record<string, unknown>): string {
+	const keys = Object.keys(obj).sort();
+	const sorted: Record<string, unknown> = {};
+	for (const k of keys) {
+		sorted[k] = obj[k];
+	}
+	return JSON.stringify(sorted);
+}
+
+function getTokenCountCacheKey(
+	serverUrl: string,
+	modelId: string,
+	content: string,
+	endpointRequestBody?: Record<string, unknown>
+): string {
+	const bodyOptions: Record<string, unknown> = {
+		model: modelId,
+		add_special: false,
+		parse_special: true,
+		with_pieces: false,
+		...(endpointRequestBody || {}),
+	};
+	const canonical = canonicalStringify(bodyOptions);
+	return crypto.createHash('sha256').update(serverUrl + modelId + content + canonical).digest('hex');
+}
+
+/**
+ * Token count with LRU cache (max 3000 entries, keyed by hash of serverUrl, model, content, and body options).
+ * Raw tokenize() remains uncached.
+ */
+export async function getTokenCount(
+	serverUrl: string,
+	modelId: string,
+	content: string,
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>,
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number
+): Promise<number> {
+	const key = getTokenCountCacheKey(serverUrl, modelId, content, endpointRequestBody);
+	const cached = tokenCountCache.get(key);
+	if (cached !== undefined) {
+		tokenCountCache.delete(key);
+		tokenCountCache.set(key, cached);
+		return cached;
+	}
+	const count = await tokenize(
+		serverUrl,
+		modelId,
+		content,
+		apiToken,
+		endpointHeaders,
+		endpointRequestBody,
+		requestTimeoutMs
+	);
+	if (tokenCountCache.size >= TOKEN_COUNT_CACHE_MAX) {
+		const firstKey = tokenCountCache.keys().next().value;
+		if (firstKey !== undefined) {
+			tokenCountCache.delete(firstKey);
+		}
+	}
+	tokenCountCache.set(key, count);
+	return count;
 }
 
 /**
