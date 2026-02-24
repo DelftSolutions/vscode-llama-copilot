@@ -4,6 +4,11 @@ import { ParsedRule } from './types';
 import { loadRules } from './ruleParser';
 import { extractFilePathFromAttachment, matchesAnyGlob } from './globMatcher';
 import { logRulesMatching } from '../logger';
+import { normalizeRuleName } from './utils';
+import { findClosestMatch } from './levenshtein';
+
+/** Max bytes of tool call params to match against rule globs (avoids scanning huge payloads) */
+const TOOL_PARAMS_MATCH_MAX_BYTES = 1024;
 
 /**
  * Manages rules per chat session
@@ -170,14 +175,14 @@ export class RuleManager {
 				}
 			}
 			
-			// Check tool call parameters (first 1024 bytes)
+			// Check tool call parameters (limited size for glob matching)
 			for (const msg of messages) {
 				const toolCallParts = msg.content.filter(
 					part => part instanceof vscode.LanguageModelToolCallPart
 				) as vscode.LanguageModelToolCallPart[];
 				
 				for (const toolCall of toolCallParts) {
-					const paramsStr = JSON.stringify(toolCall.input).substring(0, 1024);
+					const paramsStr = JSON.stringify(toolCall.input).substring(0, TOOL_PARAMS_MATCH_MAX_BYTES);
 					if (matchesAnyGlob(paramsStr, rule.metadata.globs)) {
 						availableRules.add(rule.path);
 						break;
@@ -203,19 +208,18 @@ export class RuleManager {
 	}
 	
 	/**
-	 * Find a rule by name (with fuzzy matching)
+	 * Find a rule by name (exact then case-insensitive).
 	 */
 	findRule(ruleName: string): ParsedRule | null {
-		// Remove "rule:" prefix if present
-		const normalizedName = ruleName.replace(/^rule:/, '');
-		
+		const normalizedName = normalizeRuleName(ruleName);
+
 		// Try exact match first
 		for (const rule of this.rules) {
 			if (rule.path === normalizedName || rule.name === normalizedName) {
 				return rule;
 			}
 		}
-		
+
 		// Try case-insensitive match
 		const lowerName = normalizedName.toLowerCase();
 		for (const rule of this.rules) {
@@ -223,12 +227,24 @@ export class RuleManager {
 				return rule;
 			}
 		}
-		
+
 		return null;
 	}
-	
+
 	/**
-	 * Get all rules (for fuzzy matching)
+	 * Find a rule by name with optional fuzzy matching (exact, then case-insensitive, then Levenshtein).
+	 * @param maxDistance Max edit distance for fuzzy match (default 8)
+	 */
+	findRuleFuzzy(ruleName: string, maxDistance: number = 8): ParsedRule | null {
+		const rule = this.findRule(ruleName);
+		if (rule) return rule;
+		const candidateNames = this.rules.map((r) => r.path);
+		const closest = findClosestMatch(normalizeRuleName(ruleName), candidateNames, maxDistance);
+		return closest ? this.findRule(closest) : null;
+	}
+
+	/**
+	 * Get all rules
 	 */
 	getAllRules(): ParsedRule[] {
 		return this.rules;

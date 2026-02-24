@@ -8,13 +8,55 @@ import {
 } from 'vscode';
 import {
 	ModelsResponse,
+	Model,
 	TokenizeRequest,
 	TokenizeResponse,
 	OpenAIChatMessage,
 	OpenAITool,
 	OpenAIToolCall,
+	OpenAIChatCompletionChunk,
+	StreamToolCallDeltaAccumulator,
 } from './types';
+import { fetch, Agent } from 'undici';
 import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
+
+import { normalizeFetchError } from './errorUtils';
+import { parseServerError, formatServerErrorMessage } from './serverErrorUtils';
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 1200 * 1000;
+
+/**
+ * Centralized API error handling: rethrow known errors, log, normalize fetch errors, then rethrow.
+ */
+function handleApiError(
+	error: unknown,
+	context: string,
+	knownMessagePrefixes: string | string[],
+	url?: string
+): never {
+	const prefixes = Array.isArray(knownMessagePrefixes) ? knownMessagePrefixes : [knownMessagePrefixes];
+	if (error instanceof Error && prefixes.some((p) => error.message.includes(p))) {
+		throw error;
+	}
+	logError(error instanceof Error ? error : String(error), context);
+	const normalized = normalizeFetchError(error, url);
+	if (normalized) {
+		throw new Error(normalized);
+	}
+	throw error;
+}
+const dispatcherCache = new Map<number, Agent>();
+
+function getDispatcher(timeoutMs: number): Agent {
+	let agent = dispatcherCache.get(timeoutMs);
+	if (!agent) {
+		agent = new Agent({ bodyTimeout: timeoutMs, headersTimeout: timeoutMs });
+		dispatcherCache.set(timeoutMs, agent);
+	}
+	return agent;
+}
+
+export { normalizeFetchError } from './errorUtils';
 
 /**
  * Fetch available models from llama-server
@@ -22,10 +64,13 @@ import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, l
 export async function fetchModels(
 	serverUrl: string,
 	apiToken?: string,
-	endpointHeaders?: Record<string, string>
+	endpointHeaders?: Record<string, string>,
+	requestTimeoutMs?: number
 ): Promise<ModelsResponse> {
 	const url = `${serverUrl}/models`;
-	
+	const timeoutMs = requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const dispatcher = getDispatcher(timeoutMs);
+
 	const headers: Record<string, string> = {};
 	if (apiToken) {
 		headers['Authorization'] = `Bearer ${apiToken}`;
@@ -37,22 +82,65 @@ export async function fetchModels(
 	
 	try {
 		logRequest('GET', url, headers);
-		const response = await fetch(url, { headers });
+		const response = await fetch(url, { headers, dispatcher });
 
 		if (!response.ok) {
+			const errorText = await response.text().catch(() => 'Unknown error');
 			logError(`Failed to fetch models: ${response.statusText}`, 'fetchModels');
-			throw new Error(`Failed to fetch models: ${response.statusText}`);
+			const parsed = parseServerError(errorText);
+			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+			throw new Error(formatted);
 		}
 
 		const data = await response.json() as ModelsResponse;
 		logResponse(response.status, response.statusText, data);
 		return data;
 	} catch (error) {
-		if (error instanceof Error && error.message.includes('Failed to fetch models')) {
-			throw error;
+		handleApiError(error, 'fetchModels', 'Failed to fetch models', url);
+	}
+}
+
+/** Short timeout for probing /models when building proxy-error suggestion (ms) */
+const MODELS_PROBE_TIMEOUT_MS = 10_000;
+
+/** Result of probing /models for --timeout: what we found and what to suggest */
+type TimeoutProbeResult =
+	| { serverHasTimeout: false; suggestedSeconds: number }
+	| { serverHasTimeout: true; currentSeconds: number; suggestedSeconds: number };
+
+/**
+ * Fetch /models and derive timeout suggestion from the first model whose id contains '/'.
+ * Returns what we found (and suggested value), or null on any failure.
+ */
+async function getSuggestedTimeoutFromModels(
+	serverUrl: string,
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>
+): Promise<TimeoutProbeResult | null> {
+	const url = `${serverUrl}/models`;
+	const headers: Record<string, string> = {};
+	if (apiToken) headers['Authorization'] = `Bearer ${apiToken}`;
+	if (endpointHeaders) Object.assign(headers, endpointHeaders);
+	const dispatcher = getDispatcher(MODELS_PROBE_TIMEOUT_MS);
+	try {
+		const response = await fetch(url, { headers, dispatcher });
+		if (!response.ok) return null;
+		const data = (await response.json()) as ModelsResponse;
+		const modelWithSlash = data.data?.find((m: Model) => m.id.includes('/'));
+		if (!modelWithSlash?.status?.args) return null;
+		const args = modelWithSlash.status.args;
+		const idx = args.indexOf('--timeout');
+		if (idx === -1 || idx === args.length - 1) {
+			return { serverHasTimeout: false, suggestedSeconds: 3600 };
 		}
-		logError(error instanceof Error ? error : String(error), 'fetchModels');
-		throw error;
+		const value = parseInt(args[idx + 1], 10);
+		if (isNaN(value) || value < 0) {
+			return { serverHasTimeout: false, suggestedSeconds: 3600 };
+		}
+		const suggested = Math.max(3600, value * 2);
+		return { serverHasTimeout: true, currentSeconds: value, suggestedSeconds: suggested };
+	} catch {
+		return null;
 	}
 }
 
@@ -259,7 +347,8 @@ export async function* streamChatCompletion(
 	},
 	apiToken?: string,
 	endpointHeaders?: Record<string, string>,
-	endpointRequestBody?: Record<string, unknown>
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number
 ): AsyncGenerator<
 	| { type: 'text'; content: string }
 	| { type: 'toolCall'; toolCall: LanguageModelToolCallPart }
@@ -298,6 +387,7 @@ export async function* streamChatCompletion(
 		reasoning_format: 'deepseek', // Enable thinking token extraction
 		parse_tool_calls: true, // Enable tool call parsing
 		parallel_tool_calls: true, // Enable parallel tool calls
+		cache_prompt: true, // Enable prompt caching
 	};
 
 	if (openAITools && openAITools.length > 0) {
@@ -321,18 +411,39 @@ export async function* streamChatCompletion(
 		Object.assign(headers, endpointHeaders);
 	}
 
+	const timeoutMs = requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const dispatcher = getDispatcher(timeoutMs);
+
 	try {
 		logStreamStart('POST', url, requestBody);
 		const response = await fetch(url, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify(requestBody),
+			dispatcher,
 		});
 
 		if (!response.ok) {
 			const errorText = await response.text().catch(() => 'Unknown error');
 			logError(`Failed to stream chat completion: ${response.statusText}`, 'streamChatCompletion');
-			throw new Error(`Failed to stream chat completion: ${response.statusText} - ${errorText}`);
+			if (response.status >= 500 && errorText.includes('Internal Server Error - proxy error')) {
+				const probe = await getSuggestedTimeoutFromModels(serverUrl, apiToken, endpointHeaders);
+				let message: string;
+				if (probe) {
+					if (probe.serverHasTimeout) {
+						message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, increase llama-server's --timeout (currently ${probe.currentSeconds}) to at least ${probe.suggestedSeconds} (e.g. \`--timeout ${probe.suggestedSeconds}\`).`;
+					} else {
+						message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, add \`--timeout ${probe.suggestedSeconds}\` to your llama-server command.`;
+					}
+				} else {
+					const fallbackSeconds = Math.max(3600, Math.floor(timeoutMs / 1000) * 2);
+					message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${fallbackSeconds} seconds. If the server still times out, add \`--timeout ${fallbackSeconds}\` (or higher) to your llama-server command.`;
+				}
+				throw new Error(message);
+			}
+			const parsed = parseServerError(errorText);
+			const formatted = formatServerErrorMessage(parsed, response.status, errorText);
+			throw new Error(formatted);
 		}
 
 		logStreamResponse(response.status, response.statusText);
@@ -347,14 +458,7 @@ export async function* streamChatCompletion(
 		let buffer = '';
 		
 		// Accumulators for tool calls (they may be split across chunks)
-		const toolCallAccumulators = new Map<number, {
-			id?: string;
-			type?: string;
-			function?: {
-				name?: string;
-				arguments?: string;
-			};
-		}>();
+		const toolCallAccumulators = new Map<number, StreamToolCallDeltaAccumulator>();
 
 		try {
 			while (true) {
@@ -379,30 +483,7 @@ export async function* streamChatCompletion(
 						}
 
 						try {
-							const chunk = JSON.parse(dataStr) as {
-								id?: string;
-								object?: string;
-								created?: number;
-								model?: string;
-								choices?: Array<{
-									index: number;
-									delta?: {
-										role?: string;
-										content?: string | null;
-										tool_calls?: Array<{
-											index: number;
-											id?: string;
-											type?: string;
-											function?: {
-												name?: string;
-												arguments?: string;
-											};
-										}>;
-										reasoning_content?: string;
-									};
-									finish_reason?: string | null;
-								}>;
-							};
+							const chunk = JSON.parse(dataStr) as OpenAIChatCompletionChunk;
 
 							if (!chunk.choices || chunk.choices.length === 0) {
 								continue;
@@ -491,14 +572,12 @@ export async function* streamChatCompletion(
 			reader.releaseLock();
 		}
 	} catch (error) {
-		if (error instanceof Error && (
-			error.message.includes('Failed to stream chat completion') ||
-			error.message.includes('Response body is null')
-		)) {
-			throw error;
-		}
-		logError(error instanceof Error ? error : String(error), 'streamChatCompletion');
-		throw error;
+		handleApiError(
+			error,
+			'streamChatCompletion',
+			['Failed to stream chat completion', 'Response body is null'],
+			url
+		);
 	}
 }
 
@@ -511,12 +590,18 @@ export async function tokenize(
 	content: string,
 	apiToken?: string,
 	endpointHeaders?: Record<string, string>,
-	endpointRequestBody?: Record<string, unknown>
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number
 ): Promise<number> {
-	const url = `${serverUrl}/tokenize?model=${encodeURIComponent(modelId)}`;
+	// llama.cpp POST /tokenize: no query params; options in body only (content, add_special, parse_special, with_pieces).
+	// Model in body for router/multi-model mode; single-model servers ignore it.
+	const url = `${serverUrl}/tokenize`;
+	const timeoutMs = requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const dispatcher = getDispatcher(timeoutMs);
 
 	const requestBody: TokenizeRequest = {
 		content,
+		model: modelId,
 		add_special: false,
 		parse_special: true,
 		with_pieces: false,
@@ -541,11 +626,15 @@ export async function tokenize(
 			method: 'POST',
 			headers,
 			body: JSON.stringify(requestBody),
+			dispatcher,
 		});
 
 		if (!response.ok) {
+			const errorText = await response.text().catch(() => 'Unknown error');
 			logError(`Failed to tokenize: ${response.statusText}`, 'tokenize');
-			throw new Error(`Failed to tokenize: ${response.statusText}`);
+			const parsed = parseServerError(errorText);
+			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+			throw new Error(formatted);
 		}
 
 		const result = (await response.json()) as TokenizeResponse;
@@ -554,10 +643,6 @@ export async function tokenize(
 
 		return tokenCount;
 	} catch (error) {
-		if (error instanceof Error && error.message.includes('Failed to tokenize')) {
-			throw error;
-		}
-		logError(error instanceof Error ? error : String(error), 'tokenize');
-		throw error;
+		handleApiError(error, 'tokenize', 'Failed to tokenize', url);
 	}
 }

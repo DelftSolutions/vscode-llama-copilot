@@ -1,6 +1,43 @@
 import * as vscode from 'vscode';
 import { RuleManager } from './ruleManager';
-import { findClosestMatch } from './levenshtein';
+import { normalizeRuleName } from './utils';
+
+/** Tool name for the cursor rules tool (used by provider and tool) */
+export const CURSOR_RULES_TOOL_NAME = 'get-project-rule';
+
+/** Max Levenshtein distance for fuzzy rule name matching */
+const FUZZY_MATCH_MAX_DISTANCE = 8;
+
+/**
+ * Resolve comma-separated rule names to rule content and return formatted string and normalized names.
+ * Shared by CursorRulesTool.invoke and the provider's inline tool handling.
+ */
+export function resolveAndFormatRules(
+	ruleManager: RuleManager,
+	inputRule: string
+): { formatted: string; ruleNames: string[] } {
+	const ruleNames = inputRule.split(',').map((r) => normalizeRuleName(r.trim()));
+	const results: Array<{ description: string; content: string }> = [];
+
+	for (const normalizedName of ruleNames) {
+		const rule = ruleManager.findRuleFuzzy(normalizedName, FUZZY_MATCH_MAX_DISTANCE);
+		if (rule) {
+			results.push({
+				description: rule.metadata.description || rule.path,
+				content: rule.content,
+			});
+		} else {
+			results.push({ description: normalizedName, content: '<empty file>' });
+		}
+	}
+
+	const formatted = results
+		.map((r) => `# ${r.description}\n\n\`\`\`\`\n${r.content}\n\`\`\`\``)
+		.join('\n\n');
+	return { formatted, ruleNames };
+}
+
+export { normalizeRuleName } from './utils';
 
 /**
  * Parameters for get-project-rule tool
@@ -14,12 +51,9 @@ export interface GetProjectRuleParameters {
  */
 export class CursorRulesTool implements vscode.LanguageModelTool<GetProjectRuleParameters> {
 	constructor(private ruleManager: RuleManager) {}
-	
-	/**
-	 * Get tool name
-	 */
+
 	get name(): string {
-		return 'get-project-rule';
+		return CURSOR_RULES_TOOL_NAME;
 	}
 	
 	/**
@@ -48,8 +82,10 @@ export class CursorRulesTool implements vscode.LanguageModelTool<GetProjectRuleP
 		options: vscode.LanguageModelToolInvocationPrepareOptions<GetProjectRuleParameters>,
 		_token: vscode.CancellationToken
 	): Promise<vscode.PreparedToolInvocation | undefined> {
-		const rules = options.input.rule.split(',').map(r => r.trim());
-		const ruleNames = rules.map(r => r.replace(/^rule:/, '')).join(', ');
+		const ruleNames = options.input.rule
+			.split(',')
+			.map((r) => normalizeRuleName(r.trim()))
+			.join(', ');
 		
 		return {
 			invocationMessage: `Fetching project rules: ${ruleNames}`,
@@ -67,49 +103,9 @@ export class CursorRulesTool implements vscode.LanguageModelTool<GetProjectRuleP
 		options: vscode.LanguageModelToolInvocationOptions<GetProjectRuleParameters>,
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
-		const ruleNames = options.input.rule.split(',').map(r => r.trim());
-		const results: Array<{ description: string; content: string }> = [];
-		
-		for (const ruleName of ruleNames) {
-			// Remove "rule:" prefix if present
-			const normalizedName = ruleName.replace(/^rule:/, '');
-			
-			// Try to find the rule
-			let rule = this.ruleManager.findRule(normalizedName);
-			
-			// If not found, try fuzzy matching
-			if (!rule) {
-				const allRules = this.ruleManager.getAllRules();
-				const candidateNames = allRules.map(r => r.path);
-				const closest = findClosestMatch(normalizedName, candidateNames, 8);
-				
-				if (closest) {
-					rule = this.ruleManager.findRule(closest);
-				}
-			}
-			
-			if (rule) {
-				const description = rule.metadata.description || rule.path;
-				results.push({
-					description,
-					content: rule.content,
-				});
-			} else {
-				// Rule not found
-				results.push({
-					description: normalizedName,
-					content: '<empty file>',
-				});
-			}
-		}
-		
-		// Format result
-		const formattedResults = results
-			.map(r => `# ${r.description}\n\n\`\`\`\`\n${r.content}\n\`\`\`\``)
-			.join('\n\n');
-		
+		const { formatted } = resolveAndFormatRules(this.ruleManager, options.input.rule);
 		return new vscode.LanguageModelToolResult([
-			new vscode.LanguageModelTextPart(formattedResults),
+			new vscode.LanguageModelTextPart(formatted),
 		]);
 	}
 }

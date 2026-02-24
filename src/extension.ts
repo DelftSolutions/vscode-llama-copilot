@@ -1,12 +1,10 @@
 import * as vscode from 'vscode';
-import { llamaCopilotChatProvider } from './provider';
+import { LlamaCopilotChatProvider } from './provider';
 import { initializeLogger } from './logger';
 import { EndpointsConfig } from './types';
+import { CONFIG_SECTION, CONFIG_ENDPOINTS, endpointsConfigKey, endpointsSettingsKey } from './config';
 
-const CONFIG_SECTION = 'llamaCopilot';
-const CONFIG_ENDPOINTS = 'endpoints';
-
-let provider: llamaCopilotChatProvider | undefined;
+let provider: LlamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
 
 /**
@@ -64,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		// Create and register new provider
-		provider = new llamaCopilotChatProvider(endpoints);
+		provider = new LlamaCopilotChatProvider(endpoints);
 		providerDisposable = vscode.lm.registerLanguageModelChatProvider(
 			'llama-server',
 			provider
@@ -78,7 +76,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register command to open endpoint settings
 	const commandDisposable = vscode.commands.registerCommand('llamaCopilot.openEndpointSettings', () => {
-		vscode.commands.executeCommand('workbench.action.openSettings', 'llamaCopilot.endpoints');
+		vscode.commands.executeCommand('workbench.action.openSettings', endpointsSettingsKey());
 	});
 	context.subscriptions.push(commandDisposable);
 
@@ -89,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Listen for configuration changes
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
-		if (e.affectsConfiguration(`${CONFIG_SECTION}.${CONFIG_ENDPOINTS}`)) {
+		if (e.affectsConfiguration(endpointsConfigKey())) {
 			const newEndpoints = vscode.workspace
 				.getConfiguration(CONFIG_SECTION)
 				.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});

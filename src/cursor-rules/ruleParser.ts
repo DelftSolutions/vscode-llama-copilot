@@ -5,10 +5,10 @@ import { globToRegex } from './globMatcher';
 import { logRulesMatching } from '../logger';
 
 /**
- * Parse YAML frontmatter from a string
- * Simple parser for basic frontmatter format
+ * Parse YAML frontmatter from a string.
+ * Simple parser for basic frontmatter format. Exported for testing.
  */
-function parseFrontmatter(content: string): { frontmatter: RuleMetadata; body: string } {
+export function parseFrontmatter(content: string): { frontmatter: RuleMetadata; body: string } {
 	const frontmatterRegex = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 	const match = content.match(frontmatterRegex);
 	

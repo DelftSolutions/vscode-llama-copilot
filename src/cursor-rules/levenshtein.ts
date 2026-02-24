@@ -39,17 +39,20 @@ export function levenshteinDistance(str1: string, str2: string): number {
 	return matrix[len1][len2];
 }
 
+/** Default max edit distance for fuzzy rule name matching */
+const DEFAULT_FUZZY_MAX_DISTANCE = 8;
+
 /**
  * Find the closest matching string from a list using Levenshtein distance
  * @param target Target string to match
  * @param candidates List of candidate strings
- * @param maxDistance Maximum allowed distance (default: 8)
+ * @param maxDistance Maximum allowed distance (default 8; increase for longer names)
  * @returns The closest match or null if no match within maxDistance
  */
 export function findClosestMatch(
 	target: string,
 	candidates: string[],
-	maxDistance: number = 8
+	maxDistance: number = DEFAULT_FUZZY_MAX_DISTANCE
 ): string | null {
 	let closest: string | null = null;
 	let minDistance = maxDistance + 1;

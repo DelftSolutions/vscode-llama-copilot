@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"icon": "llama1-icon.png",
 	"license": "MIT",
 	"repository": {
@@ -112,8 +112,15 @@
 								}
 							}
 						},
-						"required": ["url"]
+						"required": [
+							"url"
+						]
 					}
+				},
+				"llamaCopilot.requestTimeoutSeconds": {
+					"type": "number",
+					"default": 3600,
+					"description": "Request timeout in seconds for llama-server (headers and body). Increase for large contexts."
 				},
 				"llamaCopilot.enableCursorRules": {
 					"type": "boolean",
@@ -155,8 +162,12 @@
 		"postdownload-api": "dts main",
 		"postinstall": "npm run download-api",
 		"compile": "tsc -p ./",
+		"test": "vitest run",
 		"lint": "eslint",
 		"watch": "tsc -watch -p ./"
+	},
+	"dependencies": {
+		"undici": "^6.21.0"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.13.0",
@@ -167,6 +178,7 @@
 		"@vscode/vsce": "^3.7.1",
 		"eslint": "^9.13.0",
 		"typescript": "^5.9.2",
-		"typescript-eslint": "^8.39.0"
+		"typescript-eslint": "^8.39.0",
+		"vitest": "^4.0.18"
 	}
 }

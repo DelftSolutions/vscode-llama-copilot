@@ -6478,6 +6478,21 @@ declare module 'vscode' {
 	export type CharacterPair = [string, string];
 
 	/**
+	 * Configuration for line comments.
+	 */
+	export interface LineCommentRule {
+		/**
+		 * The line comment token, like `//`
+		 */
+		comment: string;
+		/**
+		 * Whether the comment token should not be indented and placed at the first column.
+		 * Defaults to false.
+		 */
+		noIndent?: boolean;
+	}
+
+	/**
 	 * Describes how comments for a language work.
 	 */
 	export interface CommentRule {
@@ -6485,7 +6500,7 @@ declare module 'vscode' {
 		/**
 		 * The line comment token, like `// this is a comment`
 		 */
-		lineComment?: string;
+		lineComment?: string | LineCommentRule;
 
 		/**
 		 * The block comment character pair, like `/* block comment *&#47;`
@@ -20642,7 +20657,7 @@ declare module 'vscode' {
 	/**
 	 * The various message types which a {@linkcode LanguageModelChatProvider} can emit in the chat response stream
 	 */
-	export type LanguageModelResponsePart = LanguageModelTextPart | LanguageModelToolResultPart | LanguageModelToolCallPart | LanguageModelDataPart | LanguageModelThinkingPart;
+	export type LanguageModelResponsePart = LanguageModelTextPart | LanguageModelToolResultPart | LanguageModelToolCallPart | LanguageModelDataPart;
 
 	/**
 	 * The various message types which can be sent via {@linkcode LanguageModelChat.sendRequest } and processed by a {@linkcode LanguageModelChatProvider}
@@ -20945,22 +20960,6 @@ declare module 'vscode' {
 		/**
 		 * Construct a text part with the given content.
 		 * @param value The text content of the part.
-		 */
-		constructor(value: string);
-	}
-
-	/**
-	 * A language model response part containing thinking/reasoning content, returned from a {@link LanguageModelChatResponse}.
-	 */
-	export class LanguageModelThinkingPart {
-		/**
-		 * The thinking content of the part.
-		 */
-		value: string;
-
-		/**
-		 * Construct a thinking part with the given content.
-		 * @param value The thinking content of the part.
 		 */
 		constructor(value: string);
 	}

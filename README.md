@@ -24,13 +24,14 @@ After installing `llama.cpp`, you need to start `llama-server` with your models 
 ```bash
 #!/bin/bash
 
-llama-server --port 8013 --models-preset ./models.ini
+llama-server --port 8013 --models-preset ./models.ini --timeout 3600
 ```
 
 ### Key Flags
 
 - `--port`: Specifies the port on which the server will listen (default: 8080)
 - `--models-preset`: Path to your models configuration file (INI format)
+- `--timeout`: How long in seconds processing can take without any output to the client. Increase this alongside with the [Request timeout (extension setting)](#request-timeout) if you get timeouts.
 
 The server will start and load models according to your configuration. Make sure the server is running before configuring the VS Code extension.
 
@@ -236,6 +237,10 @@ For authenticated endpoints:
 ```
 
 The token will be sent as `Authorization: Bearer <token>` in all requests.
+
+### Request timeout
+
+The extension uses a **Request timeout** (Settings → Llama Copilot → **Request timeout (seconds)**) for how long it waits for the server to respond. This should be at least as large as the `--timeout` you pass to `llama-server`. If you see proxy or stream timeouts, increase the extension timeout and ensure `llama-server` is started with `--timeout` (e.g. `--timeout 3600`).
 
 ### Context Size Overrides
 

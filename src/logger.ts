@@ -1,21 +1,26 @@
 import * as vscode from 'vscode';
+import {
+	isDebugEnabled,
+	type DebugCategory,
+	DEBUG_MODEL_LIST_FETCH,
+	DEBUG_COMPLETION,
+	DEBUG_TOKENIZATION,
+	DEBUG_RULES_MATCHING,
+	DEBUG_TOOL_CALLS,
+} from './config';
+
+export type { DebugCategory };
 
 let outputChannel: vscode.OutputChannel | undefined;
-const CONFIG_SECTION = 'llamaCopilot';
+
+/** Max length of reasoning/thinking content in debug logs to avoid clutter */
+const REASONING_LOG_TRUNCATE_LENGTH = 100;
 
 /**
  * Initialize the logger with a VS Code output channel
  */
 export function initializeLogger(channel: vscode.OutputChannel): void {
 	outputChannel = channel;
-}
-
-/**
- * Check if a debug setting is enabled
- */
-function isDebugEnabled(setting: string): boolean {
-	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-	return config.get<boolean>(`debug.${setting}`, false);
 }
 
 /**
@@ -84,11 +89,11 @@ function sanitizeForLogging(obj: unknown): unknown {
 	const sanitized: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(obj)) {
 		if (key === 'reasoning_content' && typeof value === 'string') {
-			// First truncate attachments if present, then truncate thinking tokens to first 100 chars
 			const attachmentTruncated = truncateAttachments(value);
-			sanitized[key] = attachmentTruncated.length > 100 
-				? `${attachmentTruncated.substring(0, 100)}... (${attachmentTruncated.length} chars total)`
-				: attachmentTruncated;
+			sanitized[key] =
+				attachmentTruncated.length > REASONING_LOG_TRUNCATE_LENGTH
+					? `${attachmentTruncated.substring(0, REASONING_LOG_TRUNCATE_LENGTH)}... (${attachmentTruncated.length} chars total)`
+					: attachmentTruncated;
 		} else {
 			sanitized[key] = sanitizeForLogging(value);
 		}
@@ -107,6 +112,23 @@ function log(message: string): void {
 }
 
 /**
+ * Log a debug message when the given category is enabled.
+ * Single place for category check and timestamp/formatting.
+ */
+export function logDebug(
+	category: DebugCategory,
+	message: string,
+	details?: unknown
+): void {
+	if (!isDebugEnabled(category)) return;
+	const timestamp = getTimestamp();
+	log(`[${timestamp}] ${message}`);
+	if (details !== undefined) {
+		log(details instanceof Error ? String(details) : formatJson(sanitizeForLogging(details)));
+	}
+}
+
+/**
  * Log an API request
  */
 export function logRequest(
@@ -115,19 +137,12 @@ export function logRequest(
 	headers?: Record<string, string>,
 	body?: unknown
 ): void {
-	if (!isDebugEnabled('modelListFetch')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] ${method} ${url}`);
-	
+	logDebug(DEBUG_MODEL_LIST_FETCH, `${method} ${url}`);
 	if (headers && Object.keys(headers).length > 0) {
-		log(`Headers: ${formatJson(headers)}`);
+		logDebug(DEBUG_MODEL_LIST_FETCH, 'Headers', headers);
 	}
-	
 	if (body !== undefined) {
-		log(`Request Body: ${formatJson(body)}`);
+		logDebug(DEBUG_MODEL_LIST_FETCH, 'Request Body', body);
 	}
 }
 
@@ -139,15 +154,9 @@ export function logResponse(
 	statusText: string,
 	body?: unknown
 ): void {
-	if (!isDebugEnabled('modelListFetch')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Response: ${status} ${statusText}`);
-	
+	logDebug(DEBUG_MODEL_LIST_FETCH, `Response: ${status} ${statusText}`);
 	if (body !== undefined) {
-		log(`Response Body: ${formatJson(body)}`);
+		logDebug(DEBUG_MODEL_LIST_FETCH, 'Response Body', body);
 	}
 }
 
@@ -169,22 +178,13 @@ export function logError(error: Error | string, context?: string): void {
  * Log a streaming request start
  */
 export function logStreamStart(method: string, url: string, body?: unknown): void {
-	if (!isDebugEnabled('completion')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] ${method} ${url} (Streaming)`);
-	
+	logDebug(DEBUG_COMPLETION, `${method} ${url} (Streaming)`);
 	if (body !== undefined) {
-		const sanitizedBody = sanitizeForLogging(body);
-		log(`Request Body: ${formatJson(sanitizedBody)}`);
-		
-		// Log tool call summary if present
+		logDebug(DEBUG_COMPLETION, 'Request Body', sanitizeForLogging(body));
 		if (typeof body === 'object' && body !== null && 'tools' in body) {
 			const tools = (body as { tools?: unknown[] }).tools;
 			if (Array.isArray(tools) && tools.length > 0) {
-				log(`  Tools: ${tools.length} tool(s) available`);
+				logDebug(DEBUG_COMPLETION, `Tools: ${tools.length} tool(s) available`);
 			}
 		}
 	}
@@ -194,12 +194,7 @@ export function logStreamStart(method: string, url: string, body?: unknown): voi
  * Log a streaming response status
  */
 export function logStreamResponse(status: number, statusText: string): void {
-	if (!isDebugEnabled('completion')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Stream Response: ${status} ${statusText}`);
+	logDebug(DEBUG_COMPLETION, `Stream Response: ${status} ${statusText}`);
 }
 
 /**
@@ -210,19 +205,12 @@ export function logTokenizeRequest(
 	headers?: Record<string, string>,
 	body?: unknown
 ): void {
-	if (!isDebugEnabled('tokenization')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] POST ${url} (Tokenization)`);
-	
+	logDebug(DEBUG_TOKENIZATION, `POST ${url} (Tokenization)`);
 	if (headers && Object.keys(headers).length > 0) {
-		log(`Headers: ${formatJson(headers)}`);
+		logDebug(DEBUG_TOKENIZATION, 'Headers', headers);
 	}
-	
 	if (body !== undefined) {
-		log(`Request Body: ${formatJson(body)}`);
+		logDebug(DEBUG_TOKENIZATION, 'Request Body', body);
 	}
 }
 
@@ -234,15 +222,9 @@ export function logTokenizeResponse(
 	statusText: string,
 	tokenCount?: number
 ): void {
-	if (!isDebugEnabled('tokenization')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Tokenization Response: ${status} ${statusText}`);
-	
+	logDebug(DEBUG_TOKENIZATION, `Tokenization Response: ${status} ${statusText}`);
 	if (tokenCount !== undefined) {
-		log(`Token Count: ${tokenCount}`);
+		logDebug(DEBUG_TOKENIZATION, 'Token Count', tokenCount);
 	}
 }
 
@@ -253,15 +235,9 @@ export function logRulesMatching(
 	operation: string,
 	details?: Record<string, unknown>
 ): void {
-	if (!isDebugEnabled('rulesMatching')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Rules Matching: ${operation}`);
-	
+	logDebug(DEBUG_RULES_MATCHING, `Rules Matching: ${operation}`);
 	if (details) {
-		log(`Details: ${formatJson(details)}`);
+		logDebug(DEBUG_RULES_MATCHING, 'Details', details);
 	}
 }
 
@@ -273,15 +249,9 @@ export function logToolCall(
 	callId: string,
 	input?: unknown
 ): void {
-	if (!isDebugEnabled('toolCalls')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Tool Call: ${toolName} (ID: ${callId})`);
-	
+	logDebug(DEBUG_TOOL_CALLS, `Tool Call: ${toolName} (ID: ${callId})`);
 	if (input !== undefined) {
-		log(`Input: ${formatJson(input)}`);
+		logDebug(DEBUG_TOOL_CALLS, 'Input', input);
 	}
 }
 
@@ -293,14 +263,8 @@ export function logToolCallResult(
 	callId: string,
 	result?: unknown
 ): void {
-	if (!isDebugEnabled('toolCalls')) {
-		return;
-	}
-	
-	const timestamp = getTimestamp();
-	log(`[${timestamp}] Tool Call Result: ${toolName} (ID: ${callId})`);
-	
+	logDebug(DEBUG_TOOL_CALLS, `Tool Call Result: ${toolName} (ID: ${callId})`);
 	if (result !== undefined) {
-		log(`Result: ${formatJson(result)}`);
+		logDebug(DEBUG_TOOL_CALLS, 'Result', result);
 	}
 }

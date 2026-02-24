@@ -59,9 +59,12 @@ export interface ModelStatus {
 
 /**
  * Request body for POST /tokenize
+ * See llama.cpp server README: content (required), add_special, parse_special, with_pieces.
+ * Optional model field is used for routing when the server runs in multi-model (router) mode.
  */
 export interface TokenizeRequest {
 	content: string;
+	model?: string;
 	add_special?: boolean;
 	parse_special?: boolean;
 	with_pieces?: boolean;
@@ -158,13 +161,25 @@ export interface OpenAIChatCompletionDelta {
 }
 
 /**
- * Choice in chat completion response
+ * Choice in chat completion response (streaming or non-streaming)
  */
 export interface OpenAIChatCompletionChoice {
 	index: number;
 	delta?: OpenAIChatCompletionDelta;
 	message?: OpenAIChatMessage;
 	finish_reason?: 'stop' | 'length' | 'tool_calls' | null;
+}
+
+/**
+ * Accumulator for tool call deltas that may be split across streaming chunks
+ */
+export interface StreamToolCallDeltaAccumulator {
+	id?: string;
+	type?: string;
+	function?: {
+		name?: string;
+		arguments?: string;
+	};
 }
 
 /**
