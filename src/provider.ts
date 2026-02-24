@@ -31,6 +31,20 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	}
 
 	/**
+	 * Emit a thinking part to the chat when the host supports LanguageModelThinkingPart (proposed API).
+	 * Thinking is still accumulated for follow-up requests via the tracker; this only affects display.
+	 */
+	private reportThinkingPart(
+		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+		content: string
+	): void {
+		const ThinkingPart = (vscode as { LanguageModelThinkingPart?: new (value: string) => vscode.LanguageModelResponsePart }).LanguageModelThinkingPart;
+		if (typeof ThinkingPart === 'function') {
+			progress.report(new ThinkingPart(content));
+		}
+	}
+
+	/**
 	 * Dispose resources
 	 */
 	dispose(): void {
@@ -263,10 +277,8 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			} else if (chunk.type === 'toolCall') {
 				// Report tool calls normally (these should be other tools, not get-project-rule)
 				progress.report(chunk.toolCall);
-			}
-			// Note: 'thinking' chunks are not reported; LanguageModelThinkingPart is not in the current vscode API types.
-			else if (chunk.type === 'thinking') {
-				// Ignore (no progress.report)
+			} else if (chunk.type === 'thinking') {
+				this.reportThinkingPart(progress, chunk.content);
 			}
 		}
 	}
@@ -400,8 +412,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 						currentThinkingTokens = '';
 					}
 				} else if (chunk.type === 'thinking') {
-					// Accumulate thinking tokens for tool call association.
-					// LanguageModelThinkingPart is not in the current vscode API types, so we don't report to progress.
+					this.reportThinkingPart(progress, chunk.content);
 					currentThinkingTokens += chunk.content;
 				}
 			}
