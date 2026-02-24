@@ -212,3 +212,40 @@ export interface OpenAIChatCompletionResponse {
 		total_tokens: number;
 	};
 }
+
+/**
+ * Extra context item for POST /infill (other files, not the current document).
+ */
+export interface InfillInputExtra {
+	text: string;
+	filename: string;
+}
+
+/**
+ * Request body for POST /infill (non-streaming)
+ * See dev-docs/infill.md
+ */
+export interface InfillRequest {
+	input_prefix: string;
+	input_suffix: string;
+	input_extra?: InfillInputExtra[];
+	stream?: boolean;
+	n_predict?: number;
+	model?: string;
+	prompt?: string;
+	temperature?: number;
+	[key: string]: unknown;
+}
+
+/**
+ * Non-streaming response from POST /infill
+ */
+export interface InfillResponse {
+	content: string;
+	stop?: boolean;
+	generation_settings?: unknown;
+	model?: string;
+	tokens_evaluated?: number;
+	prompt?: string;
+	truncated?: boolean;
+}

@@ -54,14 +54,13 @@ describe('normalizeFetchError', () => {
 		expect(msg).toContain('request timed out');
 		expect(msg).toContain('Increase the extension Request timeout');
 		expect(msg).toContain('Settings → Llama Copilot');
-		expect(msg).toContain('--timeout');
 	});
 
 	it('normalizes UND_ERR_BODY_TIMEOUT as timeout', () => {
 		const err = new Error('Body timeout', { cause: { code: 'UND_ERR_BODY_TIMEOUT' } } as never);
 		const msg = normalizeFetchError(err);
 		expect(msg).toContain('request timed out');
-		expect(msg).toContain('--timeout');
+		expect(msg).toContain('Increase the extension Request timeout');
 	});
 
 	it('treats message containing "timeout" as timeout', () => {

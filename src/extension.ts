@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import { LlamaCopilotChatProvider } from './provider';
 import { initializeLogger } from './logger';
 import { EndpointsConfig } from './types';
-import { CONFIG_SECTION, CONFIG_ENDPOINTS, endpointsConfigKey, endpointsSettingsKey } from './config';
+import { CONFIG_SECTION, CONFIG_ENDPOINTS, endpointsConfigKey, endpointsSettingsKey, getInlineCompletionModel } from './config';
+import { InlineCompletionProvider } from './inlineCompletion/provider';
 
 let provider: LlamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
+let inlineCompletionDisposable: vscode.Disposable | undefined;
 
 /**
  * Normalize endpoint URL by stripping trailing `/` or `/v1`
@@ -74,6 +76,25 @@ export function activate(context: vscode.ExtensionContext) {
 		return provider;
 	};
 
+	/** Register inline completion provider when a model is configured; unregister otherwise. */
+	const updateInlineCompletionProvider = (endpoints: EndpointsConfig) => {
+		if (inlineCompletionDisposable) {
+			const index = context.subscriptions.indexOf(inlineCompletionDisposable);
+			if (index !== -1) context.subscriptions.splice(index, 1);
+			inlineCompletionDisposable.dispose();
+			inlineCompletionDisposable = undefined;
+		}
+		const modelId = getInlineCompletionModel();
+		if (modelId && Object.keys(endpoints).length > 0) {
+			const selector = [{ language: '*' }];
+			inlineCompletionDisposable = vscode.languages.registerInlineCompletionItemProvider(
+				selector,
+				new InlineCompletionProvider(endpoints)
+			);
+			context.subscriptions.push(inlineCompletionDisposable);
+		}
+	};
+
 	// Register command to open endpoint settings
 	const commandDisposable = vscode.commands.registerCommand('llamaCopilot.openEndpointSettings', () => {
 		vscode.commands.executeCommand('workbench.action.openSettings', endpointsSettingsKey());
@@ -84,6 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
 	const endpoints = config.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
 	registerProvider(normalizeEndpoints(endpoints));
+	updateInlineCompletionProvider(normalizeEndpoints(endpoints));
 
 	// Listen for configuration changes
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
@@ -94,6 +116,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			// Unregister old provider and register new one with updated endpoints
 			const newProvider = registerProvider(normalizeEndpoints(newEndpoints));
+			updateInlineCompletionProvider(normalizeEndpoints(newEndpoints));
 			
 			// Fire change event on the new provider asynchronously to ensure
 			// the provider is fully registered before notifying VSCode
@@ -103,6 +126,12 @@ export function activate(context: vscode.ExtensionContext) {
 					newProvider.fireChangeEvent();
 				}, 0);
 			}
+		}
+		if (e.affectsConfiguration(`${CONFIG_SECTION}.inlineCompletionModel`)) {
+			const newEndpoints = vscode.workspace
+				.getConfiguration(CONFIG_SECTION)
+				.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
+			updateInlineCompletionProvider(normalizeEndpoints(newEndpoints));
 		}
 	});
 
@@ -117,5 +146,9 @@ export function deactivate() {
 	if (providerDisposable) {
 		providerDisposable.dispose();
 		providerDisposable = undefined;
+	}
+	if (inlineCompletionDisposable) {
+		inlineCompletionDisposable.dispose();
+		inlineCompletionDisposable = undefined;
 	}
 }

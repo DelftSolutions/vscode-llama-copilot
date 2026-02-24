@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "1.0.1",
+	"version": "1.1.0",
 	"icon": "llama1-icon.png",
 	"license": "MIT",
 	"repository": {
@@ -14,7 +14,8 @@
 		"vscode": "^1.104.0"
 	},
 	"activationEvents": [
-		"onLanguageModelAccess:llama-server"
+		"onLanguageModelAccess:llama-server",
+		"onStartupFinished"
 	],
 	"categories": [
 		"AI",
@@ -127,6 +128,31 @@
 					"default": true,
 					"description": "Enable cursor rules tool for LLM access to project rules from .cursor/rules/"
 				},
+				"llamaCopilot.inlineCompletionModel": {
+					"type": "string",
+					"default": "",
+					"description": "Model ID for inline (ghost) completions in the editor (e.g. sweep-next-edit-1.5b@local). If empty, inline completions are disabled."
+				},
+				"llamaCopilot.inlineCompletionMaxInputBytes": {
+					"type": "number",
+					"default": 16384,
+					"description": "Maximum total input size in bytes (UTF-8) for inline completion requests (prefix + suffix + context)."
+				},
+				"llamaCopilot.inlineCompletionTimeoutMs": {
+					"type": "number",
+					"default": 30000,
+					"description": "Request timeout in milliseconds for inline completion requests. No suggestion is shown on timeout."
+				},
+				"llamaCopilot.inlineCompletionDebounceMs": {
+					"type": "number",
+					"default": 2000,
+					"description": "Debounce delay in milliseconds before sending an automatic (as-you-type) inline completion request. Invoked completions are not debounced."
+				},
+				"llamaCopilot.inlineCompletionIncludeContext": {
+					"type": "boolean",
+					"default": true,
+					"description": "Use open tab contents to provide better inline completions."
+				},
 				"llamaCopilot.debug.modelListFetch": {
 					"type": "boolean",
 					"default": false,
@@ -151,6 +177,11 @@
 					"type": "boolean",
 					"default": false,
 					"description": "Enable debug logging for tool calls"
+				},
+				"llamaCopilot.debug.inlineCompletion": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable debug logging for inline completion requests, cancellations, and errors"
 				}
 			}
 		}

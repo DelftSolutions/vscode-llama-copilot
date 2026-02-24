@@ -310,6 +310,54 @@ Configure model capabilities:
 - `imageInput` (boolean): Whether the model supports image input
 - `toolCalling` (boolean | number): Whether the model supports tool calling. Can be a boolean or a number (maximum number of tools)
 
+## Inline completions (ghost text)
+
+The extension can show inline (ghost) completions in the editor using the llama-server **/infill** endpoint. This requires a **FIM-capable model** (fill-in-the-middle), such as the [Sweep next-edit](https://huggingface.co/sweepai/sweep-next-edit-1.5B) models.
+
+### Setup
+
+1. **Configure an endpoint** and ensure llama-server is running with a FIM-capable model loaded (see below).
+2. Set **Inline completion model** in Settings → Llama Copilot to a model ID including the endpoint, e.g. `sweep-next-edit-1.5b@local`. If this setting is empty, inline completions are disabled.
+
+### llama-server setup for FIM
+
+Your server must be running with a model that supports FIM tokens. Add one of the following to your `models.ini` and load it (e.g. with `llama-server --port 8013 --models-preset ./models.ini --timeout 3600`):
+
+**sweep-next-edit-1.5b:**
+
+```ini
+[sweep-next-edit-1.5b]
+jinja = true
+ctx-size = 0
+temp = 0.7
+top-p = 0.8
+top-k = 20
+hf = sweepai/sweep-next-edit-1.5B:latest
+```
+
+**sweep-next-edit-0.5b:**
+
+```ini
+[sweep-next-edit-0.5b]
+jinja = true
+ctx-size = 0
+temp = 0.7
+top-p = 0.8
+top-k = 20
+hf = sweepai/sweep-next-edit-0.5B:Q8_0
+```
+
+### Inline completion settings
+
+| Setting | Description |
+|--------|-------------|
+| **Inline completion model** | Model ID (e.g. `sweep-next-edit-1.5b@local`). Empty = disabled. |
+| **Inline completion timeout (ms)** | Request timeout; no suggestion is shown on timeout. |
+| **Inline completion debounce (ms)** | Delay before sending an automatic (as-you-type) request. |
+| **Max input bytes** | Maximum total input size (prefix + suffix + context) sent to the server. |
+| **Include context** | When enabled, include content from other open tabs to improve suggestions. |
+| **Debug: Inline completion** | Log requests, cancellations, and errors to the "LLaMA Server API" output. |
+
 ## Cursor Rules Integration
 
 The extension includes a built-in tool that gives the LLM access to your project's cursor rules from `.cursor/rules/`. This allows the model to access project-specific guidelines, coding standards, and best practices automatically.

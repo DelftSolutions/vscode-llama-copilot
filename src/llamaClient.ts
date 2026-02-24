@@ -16,6 +16,8 @@ import {
 	OpenAIToolCall,
 	OpenAIChatCompletionChunk,
 	StreamToolCallDeltaAccumulator,
+	InfillRequest,
+	InfillResponse,
 } from './types';
 import { fetch, Agent } from 'undici';
 import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
@@ -644,5 +646,78 @@ export async function tokenize(
 		return tokenCount;
 	} catch (error) {
 		handleApiError(error, 'tokenize', 'Failed to tokenize', url);
+	}
+}
+
+/** Fixed n_predict for inline completion (FIM) requests */
+const INFILL_N_PREDICT = 128;
+
+/**
+ * Non-streaming infill request (POST /infill).
+ * Returns the generated content string. Throws on error, timeout, or abort.
+ * Caller must pass an AbortSignal tied to cancellation token and timeout.
+ */
+export async function requestInfill(
+	serverUrl: string,
+	modelId: string,
+	body: { input_prefix: string; input_suffix: string; input_extra?: Array<{ text: string; filename: string }> },
+	timeoutMs: number,
+	signal: AbortSignal,
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>,
+	endpointRequestBody?: Record<string, unknown>
+): Promise<string> {
+	const url = `${serverUrl}/infill`;
+
+	const requestBody: InfillRequest = {
+		input_prefix: body.input_prefix,
+		input_suffix: body.input_suffix,
+		stream: false,
+		n_predict: INFILL_N_PREDICT,
+		model: modelId,
+	};
+	if (body.input_extra && body.input_extra.length > 0) {
+		requestBody.input_extra = body.input_extra;
+	}
+	if (endpointRequestBody) {
+		Object.assign(requestBody, endpointRequestBody);
+	}
+
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+	};
+	if (apiToken) {
+		headers['Authorization'] = `Bearer ${apiToken}`;
+	}
+	if (endpointHeaders) {
+		Object.assign(headers, endpointHeaders);
+	}
+
+	const dispatcher = getDispatcher(timeoutMs);
+
+	try {
+		const response = await fetch(url, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(requestBody),
+			dispatcher,
+			signal,
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text().catch(() => 'Unknown error');
+			logError(`Failed to infill: ${response.statusText}`, 'requestInfill');
+			const parsed = parseServerError(errorText);
+			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+			throw new Error(formatted);
+		}
+
+		const data = (await response.json()) as InfillResponse;
+		return typeof data.content === 'string' ? data.content : '';
+	} catch (error) {
+		if (error instanceof Error && error.name === 'AbortError') {
+			throw error;
+		}
+		handleApiError(error, 'requestInfill', ['Failed to infill'], url);
 	}
 }
