@@ -78,6 +78,18 @@ export function extractContextSize(model: Model): number | null {
 	return ctxSize;
 }
 
+/** Extract parallel slot count from model args (--parallel). Returns null if not found or invalid. */
+export function extractParallel(model: Model): number | null {
+	const args = model.status.args;
+	if (!args) return null;
+	const parallelIndex = args.indexOf('--parallel');
+	if (parallelIndex === -1 || parallelIndex === args.length - 1) return null;
+	const parallelValue = args[parallelIndex + 1];
+	const parallel = parseInt(parallelValue, 10);
+	if (isNaN(parallel) || parallel <= 0) return null;
+	return parallel;
+}
+
 /** Calculate max output tokens from context size (25% of context, clamped to [8192, 128000]). */
 export function calculateMaxOutputTokens(contextSize: number): number {
 	const maxOutput = Math.floor(contextSize * MAX_OUTPUT_TOKENS_FRACTION);
@@ -113,12 +125,13 @@ export function createModelInfoFromConfig(
 	const effectiveContextSize = modelConfig?.contextSize ?? DEFAULT_CONTEXT_SIZE;
 	const maxOutputTokens =
 		modelConfig?.maxOutputTokens ?? calculateMaxOutputTokens(effectiveContextSize);
+	const maxInputTokens = Math.max(1, effectiveContextSize - maxOutputTokens);
 	return {
 		id: modelIdWithEndpoint,
 		name: modelIdWithEndpoint,
 		tooltip: `Model from llama-server endpoint "${endpointId}" (configured)`,
 		family: 'llama-server',
-		maxInputTokens: effectiveContextSize,
+		maxInputTokens,
 		maxOutputTokens,
 		version: '1.0.0',
 		capabilities: getMergedCapabilities(modelConfig),
@@ -150,16 +163,21 @@ export async function provideLanguageModelChatInformation(
 				foundModelIds.add(model.id);
 				const modelConfig = endpointConfig.models?.[model.id];
 				const extractedContextSize = extractContextSize(model);
-				const effectiveContextSize =
+				let effectiveContextSize =
 					modelConfig?.contextSize ?? extractedContextSize ?? DEFAULT_CONTEXT_SIZE;
+				const parallel = extractParallel(model);
+				if (parallel != null && parallel > 0) {
+					effectiveContextSize = Math.floor(effectiveContextSize / parallel);
+				}
 				const maxOutputTokens =
 					modelConfig?.maxOutputTokens ?? calculateMaxOutputTokens(effectiveContextSize);
+				const maxInputTokens = Math.max(1, effectiveContextSize - maxOutputTokens);
 				allModels.push({
 					id: `${model.id}@${endpointId}`,
 					name: `${model.id}@${endpointId}`,
 					tooltip: `Model from llama-server endpoint "${endpointId}" (${model.status.value})`,
 					family: 'llama-server',
-					maxInputTokens: effectiveContextSize,
+					maxInputTokens,
 					maxOutputTokens,
 					version: '1.0.0',
 					capabilities: getMergedCapabilities(modelConfig),

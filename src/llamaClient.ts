@@ -15,6 +15,7 @@ import {
 	OpenAITool,
 	OpenAIToolCall,
 	OpenAIChatCompletionChunk,
+	OpenAIChatCompletionChunkWithProgress,
 	StreamToolCallDeltaAccumulator,
 	InfillRequest,
 	InfillResponse,
@@ -316,13 +317,21 @@ export function convertOpenAIMessageToVSCode(
 	const toolCalls: LanguageModelToolCallPart[] = [];
 	if (message.tool_calls) {
 		for (const toolCall of message.tool_calls) {
+			if (!toolCall.function || !toolCall.id) continue;
+			const raw = toolCall.function.arguments ?? '';
+			const argsStr = raw.trim() === '' ? '{}' : raw;
 			try {
-				const input = JSON.parse(toolCall.function.arguments);
+				const input = JSON.parse(argsStr);
 				toolCalls.push(
 					new LanguageModelToolCallPart(toolCall.id, toolCall.function.name, input)
 				);
 			} catch (e) {
 				console.warn('Failed to parse tool call arguments:', toolCall.function.arguments);
+				toolCalls.push(
+					new LanguageModelToolCallPart(toolCall.id, toolCall.function.name, {
+						__error: `tool call parsing failed: ${e instanceof Error ? e.message : String(e)}`,
+					})
+				);
 			}
 		}
 	}
@@ -332,6 +341,33 @@ export function convertOpenAIMessageToVSCode(
 		toolCalls,
 		reasoningContent: message.reasoning_content,
 	};
+}
+
+/**
+ * Flush accumulated tool call deltas into LanguageModelToolCallPart array.
+ * Sorts by index, treats missing/empty arguments as '{}', uses {} on parse failure.
+ * Clears the map after building the list.
+ */
+function flushAccumulatedToolCalls(
+	accumulators: Map<number, StreamToolCallDeltaAccumulator>
+): LanguageModelToolCallPart[] {
+	const result: LanguageModelToolCallPart[] = [];
+	const sorted = [...accumulators.entries()].sort((a, b) => a[0] - b[0]);
+	for (const [, acc] of sorted) {
+		if (!acc.id || !acc.function?.name) continue;
+		const argsRaw = acc.function.arguments ?? '';
+		const argsStr = argsRaw.trim() === '' ? '{}' : argsRaw;
+		let input: object;
+		try {
+			input = JSON.parse(argsStr);
+		} catch (e) {
+			console.warn('Failed to parse accumulated tool call:', acc);
+			input = {};
+		}
+		result.push(new LanguageModelToolCallPart(acc.id, acc.function.name, input));
+	}
+	accumulators.clear();
+	return result;
 }
 
 /**
@@ -351,11 +387,13 @@ export async function* streamChatCompletion(
 	apiToken?: string,
 	endpointHeaders?: Record<string, string>,
 	endpointRequestBody?: Record<string, unknown>,
-	requestTimeoutMs?: number
+	requestTimeoutMs?: number,
+	signal?: AbortSignal
 ): AsyncGenerator<
 	| { type: 'text'; content: string }
 	| { type: 'toolCall'; toolCall: LanguageModelToolCallPart }
-	| { type: 'thinking'; content: string },
+	| { type: 'thinking'; content: string }
+	| { type: 'prompt_progress'; total: number; cache: number; processed: number; time_ms: number },
 	void,
 	unknown
 > {
@@ -391,6 +429,7 @@ export async function* streamChatCompletion(
 		parse_tool_calls: true, // Enable tool call parsing
 		parallel_tool_calls: true, // Enable parallel tool calls
 		cache_prompt: true, // Enable prompt caching
+		return_progress: true, // Request prompt_progress in stream (llama-server)
 	};
 
 	if (openAITools && openAITools.length > 0) {
@@ -424,6 +463,7 @@ export async function* streamChatCompletion(
 			headers,
 			body: JSON.stringify(requestBody),
 			dispatcher,
+			signal,
 		});
 
 		if (!response.ok) {
@@ -486,7 +526,13 @@ export async function* streamChatCompletion(
 						}
 
 						try {
-							const chunk = JSON.parse(dataStr) as OpenAIChatCompletionChunk;
+							const chunk = JSON.parse(dataStr) as OpenAIChatCompletionChunkWithProgress;
+
+							// Yield prompt progress first if present (llama-server extension)
+							if (chunk.prompt_progress) {
+								const { total, cache, processed, time_ms } = chunk.prompt_progress;
+								yield { type: 'prompt_progress', total, cache, processed, time_ms };
+							}
 
 							if (!chunk.choices || chunk.choices.length === 0) {
 								continue;
@@ -511,15 +557,17 @@ export async function* streamChatCompletion(
 
 							// Handle tool calls (may be split across chunks)
 							if (delta.tool_calls) {
-								for (const toolCallDelta of delta.tool_calls) {
-									const index = toolCallDelta.index;
-									
+								delta.tool_calls.forEach((toolCallDelta, arrayIndex) => {
+									const index =
+										toolCallDelta.index !== undefined && Number.isInteger(toolCallDelta.index)
+											? toolCallDelta.index
+											: arrayIndex;
 									if (!toolCallAccumulators.has(index)) {
 										toolCallAccumulators.set(index, {});
 									}
 
 									const accumulator = toolCallAccumulators.get(index)!;
-									
+
 									if (toolCallDelta.id !== undefined) {
 										accumulator.id = toolCallDelta.id;
 									}
@@ -534,32 +582,23 @@ export async function* streamChatCompletion(
 											accumulator.function.name = toolCallDelta.function.name;
 										}
 										if (toolCallDelta.function.arguments !== undefined) {
-											accumulator.function.arguments = 
+											accumulator.function.arguments =
 												(accumulator.function.arguments || '') + toolCallDelta.function.arguments;
 										}
 									}
-								}
+								});
 							}
 
-							// If finished, emit any remaining tool calls
-							if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
-								for (const [index, accumulator] of toolCallAccumulators.entries()) {
-									if (accumulator.id && accumulator.function?.name && accumulator.function.arguments) {
-										try {
-											const input = JSON.parse(accumulator.function.arguments);
-											const toolCall = new LanguageModelToolCallPart(
-												accumulator.id,
-												accumulator.function.name,
-												input
-											);
-											yield { type: 'toolCall', toolCall };
-										} catch (e) {
-											console.warn('Failed to parse accumulated tool call:', accumulator);
-										}
-									}
+							// Emit tool calls to the host only once the message is complete (or stream ended).
+							// Matches Copilot: completed tool calls are sent only when finish_reason is set or on flush.
+							const shouldFlushToolCalls =
+								choice.finish_reason === 'tool_calls' ||
+								choice.finish_reason === 'stop' ||
+								choice.finish_reason === 'length';
+							if (shouldFlushToolCalls && toolCallAccumulators.size > 0) {
+								for (const toolCall of flushAccumulatedToolCalls(toolCallAccumulators)) {
+									yield { type: 'toolCall', toolCall };
 								}
-								toolCallAccumulators.clear();
-								
 								if (choice.finish_reason === 'stop') {
 									return;
 								}
@@ -571,10 +610,23 @@ export async function* streamChatCompletion(
 					}
 				}
 			}
+
+			// If stream ended without a finish_reason chunk, flush any accumulated tool calls so they are not lost.
+			if (toolCallAccumulators.size > 0) {
+				console.warn(
+					'streamChatCompletion: stream ended without finish_reason; flushing accumulated tool calls'
+				);
+				for (const toolCall of flushAccumulatedToolCalls(toolCallAccumulators)) {
+					yield { type: 'toolCall', toolCall };
+				}
+			}
 		} finally {
 			reader.releaseLock();
 		}
 	} catch (error) {
+		if (error instanceof Error && error.name === 'AbortError') {
+			throw error;
+		}
 		handleApiError(
 			error,
 			'streamChatCompletion',

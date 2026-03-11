@@ -4,7 +4,8 @@ import { EndpointsConfig } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
 import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
-import { getRequestTimeoutMs, isCursorRulesEnabled as isCursorRulesEnabledConfig } from './config';
+import { getRequestTimeoutMs, getPromptProgressStatusBarThresholdSeconds, isCursorRulesEnabled as isCursorRulesEnabledConfig } from './config';
+import { estimatePromptProgress, formatRemaining } from './promptProgressEstimate';
 import {
 	parseModelId,
 	getEndpointConfig,
@@ -246,7 +247,9 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		tools: readonly vscode.LanguageModelChatTool[],
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		token: vscode.CancellationToken,
-		requestTimeoutMs: number
+		requestTimeoutMs: number,
+		statusBarRef: { disposable: vscode.Disposable | undefined },
+		clearStatusBar: () => void
 	): Promise<void> {
 		const completionOptions = {
 			tools: tools,
@@ -255,31 +258,72 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			isNewUserMessage: false,
 		};
 
+		const abortController = new AbortController();
+		token.onCancellationRequested(() => abortController.abort());
+
 		// Stream follow-up response
-		for await (const chunk of streamChatCompletion(
-			serverUrl,
-			modelId,
-			messages,
-			completionOptions,
-			apiToken,
-			headers,
-			requestBody,
-			requestTimeoutMs
-		)) {
-			// Check for cancellation
-			if (token.isCancellationRequested) {
+		try {
+			let promptProgressShown = false;
+			for await (const chunk of streamChatCompletion(
+				serverUrl,
+				modelId,
+				messages,
+				completionOptions,
+				apiToken,
+				headers,
+				requestBody,
+				requestTimeoutMs,
+				abortController.signal
+			)) {
+				// Check for cancellation
+				if (token.isCancellationRequested) {
+					clearStatusBar();
+					return;
+				}
+
+				// Handle different chunk types
+				if (chunk.type === 'prompt_progress') {
+					const threshold = getPromptProgressStatusBarThresholdSeconds();
+					const result = estimatePromptProgress(
+						{ total: chunk.total, processed: chunk.processed, time_ms: chunk.time_ms },
+						threshold
+					);
+					const shouldShowOrUpdate = result.showStatusBar || promptProgressShown;
+					const msg =
+						result.percent !== undefined && result.remainingMs !== undefined
+							? `Processing prompt... ${result.percent}% (about ${formatRemaining(result.remainingMs)} remaining)`
+							: result.percent !== undefined
+								? `Processing prompt... ${result.percent}%`
+								: result.remainingMs !== undefined
+									? `Processing prompt... (about ${formatRemaining(result.remainingMs)} remaining)`
+									: '';
+					if (shouldShowOrUpdate && msg) {
+						clearStatusBar();
+						statusBarRef.disposable = vscode.window.setStatusBarMessage(msg);
+						if (result.showStatusBar) {
+							promptProgressShown = true;
+						}
+					}
+				} else {
+					clearStatusBar();
+					promptProgressShown = false;
+					if (chunk.type === 'text') {
+						progress.report(new vscode.LanguageModelTextPart(chunk.content));
+					} else if (chunk.type === 'toolCall') {
+						// Report tool calls normally (these should be other tools, not get-project-rule)
+						progress.report(chunk.toolCall);
+					} else if (chunk.type === 'thinking') {
+						this.reportThinkingPart(progress, chunk.content);
+					}
+				}
+			}
+			clearStatusBar();
+		} catch (error) {
+			if (error instanceof Error && error.name === 'AbortError') {
+				clearStatusBar();
 				return;
 			}
-
-			// Handle different chunk types
-			if (chunk.type === 'text') {
-				progress.report(new vscode.LanguageModelTextPart(chunk.content));
-			} else if (chunk.type === 'toolCall') {
-				// Report tool calls normally (these should be other tools, not get-project-rule)
-				progress.report(chunk.toolCall);
-			} else if (chunk.type === 'thinking') {
-				this.reportThinkingPart(progress, chunk.content);
-			}
+			throw error;
 		}
 	}
 
@@ -294,6 +338,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		token: vscode.CancellationToken
 	): Promise<void> {
+		const statusBarRef = { disposable: undefined as vscode.Disposable | undefined };
+		const clearStatusBar = () => {
+			statusBarRef.disposable?.dispose();
+			statusBarRef.disposable = undefined;
+		};
 		try {
 			// Parse model ID to extract endpoint identifier
 			const { baseModelId, endpointId } = parseModelId(model.id);
@@ -349,7 +398,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 
 			const requestTimeoutMs = getRequestTimeoutMs();
 
+			const abortController = new AbortController();
+			token.onCancellationRequested(() => abortController.abort());
+
 			// Stream chat completion
+			let promptProgressShown = false;
 			for await (const chunk of streamChatCompletion(
 				endpointConfig.url,
 				baseModelId,
@@ -358,16 +411,43 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				endpointConfig.apiToken,
 				mergedHeaders,
 				mergedRequestBody,
-				requestTimeoutMs
+				requestTimeoutMs,
+				abortController.signal
 			)) {
 				// Check for cancellation
 				if (token.isCancellationRequested) {
+					clearStatusBar();
 					return;
 				}
 
 				// Handle different chunk types
-				if (chunk.type === 'text') {
-					progress.report(new vscode.LanguageModelTextPart(chunk.content));
+				if (chunk.type === 'prompt_progress') {
+					const threshold = getPromptProgressStatusBarThresholdSeconds();
+					const result = estimatePromptProgress(
+						{ total: chunk.total, processed: chunk.processed, time_ms: chunk.time_ms },
+						threshold
+					);
+					const shouldShowOrUpdate = result.showStatusBar || promptProgressShown;
+					const msg =
+						result.percent !== undefined && result.remainingMs !== undefined
+							? `Processing prompt... ${result.percent}% (about ${formatRemaining(result.remainingMs)} remaining)`
+							: result.percent !== undefined
+								? `Processing prompt... ${result.percent}%`
+								: result.remainingMs !== undefined
+									? `Processing prompt... (about ${formatRemaining(result.remainingMs)} remaining)`
+									: '';
+					if (shouldShowOrUpdate && msg) {
+						clearStatusBar();
+						statusBarRef.disposable = vscode.window.setStatusBarMessage(msg);
+						if (result.showStatusBar) {
+							promptProgressShown = true;
+						}
+					}
+				} else {
+					clearStatusBar();
+					promptProgressShown = false;
+					if (chunk.type === 'text') {
+						progress.report(new vscode.LanguageModelTextPart(chunk.content));
 				} else if (chunk.type === 'toolCall') {
 					logToolCall(chunk.toolCall.name, chunk.toolCall.callId, chunk.toolCall.input);
 					
@@ -415,8 +495,10 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					this.reportThinkingPart(progress, chunk.content);
 					currentThinkingTokens += chunk.content;
 				}
+				}
 			}
 			
+			clearStatusBar();
 			// After initial stream completes, if we have cursor rules tool calls, convert them to text messages
 			if (cursorRulesToolCalls.length > 0) {
 				// Build assistant and user messages
@@ -448,7 +530,9 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					options.tools?.filter(t => t.name !== CURSOR_RULES_TOOL_NAME) || [],
 					progress,
 					token,
-					requestTimeoutMs
+					requestTimeoutMs,
+					statusBarRef,
+					clearStatusBar
 				);
 			}
 
@@ -460,14 +544,19 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				this.thinkingTokens.set(fallbackKey, currentThinkingTokens);
 			}
 		} catch (error) {
+			if (error instanceof Error && error.name === 'AbortError') {
+				clearStatusBar();
+				return;
+			}
 			console.error('Failed to provide chat response:', error);
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
 			const displayMessage = errorMessage.includes('Settings → Llama Copilot')
 				? errorMessage
 				: `${errorMessage} Check Settings → Llama Copilot if the problem continues.`;
-			progress.report(new vscode.LanguageModelTextPart(displayMessage));
-			// Throw a fresh error with only our message so the host "Reason" text shows this, not the original fetch error
+			// Throw only; do not report as content — the host shows the error in the Reason UI.
 			throw new Error(displayMessage);
+		} finally {
+			clearStatusBar();
 		}
 	}
 

@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "1.1.1",
+	"version": "1.1.2",
 	"icon": "llama1-icon.png",
 	"license": "MIT",
 	"repository": {
@@ -122,6 +122,11 @@
 					"type": "number",
 					"default": 3600,
 					"description": "Request timeout in seconds for llama-server (headers and body). Increase for large contexts."
+				},
+				"llamaCopilot.promptProgressStatusBarThresholdSeconds": {
+					"type": "number",
+					"default": 120,
+					"description": "Show status bar during prompt processing when estimated remaining time exceeds this many seconds. Set to 0 to disable. Prompt processing time is estimated assuming quadratic scaling with prompt length."
 				},
 				"llamaCopilot.enableCursorRules": {
 					"type": "boolean",

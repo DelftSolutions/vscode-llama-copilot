@@ -149,7 +149,7 @@ export interface OpenAIChatCompletionDelta {
 	role?: 'assistant';
 	content?: string | null;
 	tool_calls?: Array<{
-		index: number;
+		index?: number;
 		id?: string;
 		type?: 'function';
 		function?: {
@@ -192,6 +192,24 @@ export interface OpenAIChatCompletionChunk {
 	model: string;
 	choices: OpenAIChatCompletionChoice[];
 }
+
+/**
+ * Prompt processing progress (llama-server extension when return_progress: true).
+ * Sent in stream chunks as top-level prompt_progress.
+ */
+export interface PromptProgress {
+	total: number;
+	cache: number;
+	processed: number;
+	time_ms: number;
+}
+
+/**
+ * SSE chunk from llama-server may include optional prompt_progress (when return_progress: true).
+ */
+export type OpenAIChatCompletionChunkWithProgress = OpenAIChatCompletionChunk & {
+	prompt_progress?: PromptProgress;
+};
 
 /**
  * Non-streaming response from POST /v1/chat/completions

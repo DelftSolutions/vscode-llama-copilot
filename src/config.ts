@@ -42,6 +42,14 @@ export function getRequestTimeoutMs(): number {
 }
 
 /**
+ * Show status bar during prompt processing when estimated remaining time exceeds this many seconds.
+ * Returns 0 = disabled. Default 120.
+ */
+export function getPromptProgressStatusBarThresholdSeconds(): number {
+	return getConfig().get<number>('promptProgressStatusBarThresholdSeconds', 120);
+}
+
+/**
  * Check if cursor rules feature is enabled.
  */
 export function isCursorRulesEnabled(): boolean {
