@@ -56,6 +56,13 @@ export function getPromptProgressStatusBarThresholdSeconds(): number {
 }
 
 /**
+ * Whether to show all models without filtering slashed IDs.
+ */
+export function isShowAllModels(): boolean {
+	return getConfig().get<boolean>('showAllModels', false);
+}
+
+/**
  * Check if cursor rules feature is enabled.
  */
 export function isCursorRulesEnabled(): boolean {

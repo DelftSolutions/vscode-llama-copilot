@@ -63,29 +63,33 @@ export function getMergedModelConfig(
 
 /** Check if model has embeddings flag (embeddings-only, not chat). */
 export function hasEmbeddings(model: Model): boolean {
-	return model.status.args?.includes('--embeddings') ?? false;
+	return model.status?.args?.includes('--embeddings') ?? false;
 }
 
 /** Check if model supports vision/image input (--image-min-tokens). */
 export function hasVisionCapability(model: Model): boolean {
-	return model.status.args?.includes('--image-min-tokens') ?? false;
+	return model.status?.args?.includes('--image-min-tokens') ?? false;
 }
 
-/** Extract context size from model args (--ctx-size). Returns null if not found or invalid. */
+/** Extract context size from model args (--ctx-size) or meta.n_ctx. Returns null if not found or invalid. */
 export function extractContextSize(model: Model): number | null {
-	const args = model.status.args;
-	if (!args) return null;
-	const ctxSizeIndex = args.indexOf('--ctx-size');
-	if (ctxSizeIndex === -1 || ctxSizeIndex === args.length - 1) return null;
-	const ctxSizeValue = args[ctxSizeIndex + 1];
-	const ctxSize = parseInt(ctxSizeValue, 10);
-	if (isNaN(ctxSize) || ctxSize === 0) return null;
-	return ctxSize;
+	const args = model.status?.args;
+	if (args) {
+		const ctxSizeIndex = args.indexOf('--ctx-size');
+		if (ctxSizeIndex !== -1 && ctxSizeIndex !== args.length - 1) {
+			const ctxSize = parseInt(args[ctxSizeIndex + 1], 10);
+			if (!isNaN(ctxSize) && ctxSize !== 0) return ctxSize;
+		}
+	}
+	if (model.meta?.n_ctx != null && model.meta.n_ctx > 0) {
+		return model.meta.n_ctx;
+	}
+	return null;
 }
 
 /** Extract parallel slot count from model args (--parallel). Returns null if not found or invalid. */
 export function extractParallel(model: Model): number | null {
-	const args = model.status.args;
+	const args = model.status?.args;
 	if (!args) return null;
 	const parallelIndex = args.indexOf('--parallel');
 	if (parallelIndex === -1 || parallelIndex === args.length - 1) return null;
@@ -104,6 +108,15 @@ export function calculateMaxOutputTokens(contextSize: number): number {
 /** Check if model is suitable for chat (not embeddings-only). */
 export function isChatCapable(model: Model): boolean {
 	return !hasEmbeddings(model);
+}
+
+/**
+ * Detect single-model server mode: no models have a `status` field.
+ * In router (multi-model) mode every model carries `status` with args/value;
+ * a plain llama-server started with --model omits it entirely.
+ */
+export function isSingleModelServer(models: Model[]): boolean {
+	return models.length > 0 && models.every((m) => !m.status);
 }
 
 /** Default capabilities for chat models. */
@@ -148,10 +161,12 @@ export function createModelInfoFromConfig(
 
 /**
  * Fetch and build language model chat information for all configured endpoints.
+ * @param showAllModels When true, skip filtering models whose ID contains a slash.
  */
 export async function provideLanguageModelChatInformation(
 	endpoints: EndpointsConfig,
-	requestTimeoutMs: number
+	requestTimeoutMs: number,
+	showAllModels: boolean = false
 ): Promise<vscode.LanguageModelChatInformation[]> {
 	const allModels: vscode.LanguageModelChatInformation[] = [];
 
@@ -164,8 +179,9 @@ export async function provideLanguageModelChatInformation(
 				endpointConfig.headers,
 				requestTimeoutMs
 			);
+			const skipSlashFilter = showAllModels || isSingleModelServer(response.data);
 			const chatModels = response.data.filter(
-				(model) => !model.id.includes('/') && isChatCapable(model)
+				(model) => (skipSlashFilter || !model.id.includes('/')) && isChatCapable(model)
 			);
 			for (const model of chatModels) {
 				foundModelIds.add(model.id);
@@ -183,7 +199,7 @@ export async function provideLanguageModelChatInformation(
 				allModels.push({
 					id: `${model.id}@${endpointId}`,
 					name: `${model.id}@${endpointId}`,
-					tooltip: `Model from llama-server endpoint "${endpointId}" (${model.status.value})`,
+					tooltip: `Model from llama-server endpoint "${endpointId}" (${model.status?.value ?? 'available'})`,
 					family: 'llama-server',
 					maxInputTokens,
 					maxOutputTokens,

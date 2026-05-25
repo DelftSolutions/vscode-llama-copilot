@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"icon": "llama1-icon.png",
 	"license": "MIT",
 	"repository": {
@@ -121,6 +121,11 @@
 							"url"
 						]
 					}
+				},
+				"llamaCopilot.showAllModels": {
+					"type": "boolean",
+					"default": false,
+					"description": "Show all models from llama-server without filtering. By default, models with a slash in their ID (e.g. HuggingFace repo paths) are hidden because they duplicate aliased models. Enable this if your models are not appearing."
 				},
 				"llamaCopilot.requestTimeoutSeconds": {
 					"type": "number",

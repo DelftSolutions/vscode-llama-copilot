@@ -4,7 +4,7 @@ import { EndpointsConfig } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
 import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
-import { getRequestTimeoutMs, getPromptProgressStatusBarThresholdSeconds, isCursorRulesEnabled as isCursorRulesEnabledConfig } from './config';
+import { getRequestTimeoutMs, getPromptProgressStatusBarThresholdSeconds, isCursorRulesEnabled as isCursorRulesEnabledConfig, isShowAllModels } from './config';
 import { estimatePromptProgress, formatRemaining } from './promptProgressEstimate';
 import {
 	parseModelId,
@@ -179,7 +179,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		_options: { silent: boolean },
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelChatInformation[]> {
-		return provideModelInfo(this.endpoints, getRequestTimeoutMs());
+		return provideModelInfo(this.endpoints, getRequestTimeoutMs(), isShowAllModels());
 	}
 
 	/**

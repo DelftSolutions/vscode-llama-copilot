@@ -36,14 +36,30 @@ export interface ModelsResponse {
 }
 
 /**
- * Model information from /models endpoint
+ * Model metadata returned by single-model llama-server (no router/presets).
+ */
+export interface ModelMeta {
+	n_ctx?: number;
+	n_ctx_train?: number;
+	n_embd?: number;
+	n_params?: number;
+	n_vocab?: number;
+	vocab_type?: number;
+	size?: number;
+}
+
+/**
+ * Model information from /models endpoint.
+ * In multi-model (router) mode, `status` is present with args/value.
+ * In single-model mode, `status` is absent and `meta` provides context info.
  */
 export interface Model {
 	id: string;
 	object: 'model';
 	owned_by: string;
 	created: number;
-	status: ModelStatus;
+	status?: ModelStatus;
+	meta?: ModelMeta;
 }
 
 /**
