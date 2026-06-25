@@ -37,8 +37,66 @@
 			{
 				"command": "llamaCopilot.sendTestSmtpEmail",
 				"title": "Send Test SMTP Email"
+			},
+			{
+				"command": "llamaCopilot.llamaServer.start",
+				"title": "Llama Copilot: Start Llama Server",
+				"icon": "$(play)"
+			},
+			{
+				"command": "llamaCopilot.llamaServer.stop",
+				"title": "Llama Copilot: Stop Llama Server",
+				"icon": "$(stop)"
+			},
+			{
+				"command": "llamaCopilot.llamaServer.shutdown",
+				"title": "Llama Copilot: Shutdown Server",
+				"icon": "$(error)"
+			},
+			{
+				"command": "llamaCopilot.llamaServer.refreshStatus",
+				"title": "Llama Copilot: Refresh Status",
+				"icon": "$(refresh)"
 			}
 		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "llamaCopilot.llamaServer.start",
+					"when": "llamaCopilot.sshConfigured"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.stop",
+					"when": "llamaCopilot.sshConfigured"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.shutdown",
+					"when": "llamaCopilot.sshConfigured"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.refreshStatus",
+					"when": "llamaCopilot.sshConfigured"
+				}
+			],
+			"statusBar/remoteGroup": [
+				{
+					"command": "llamaCopilot.llamaServer.start",
+					"group": "llama_server@1"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.stop",
+					"group": "llama_server@2"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.shutdown",
+					"group": "llama_server@3"
+				},
+				{
+					"command": "llamaCopilot.llamaServer.refreshStatus",
+					"group": "llama_server@4"
+				}
+			]
+		},
 		"configuration": {
 			"title": "LLaMA Server",
 			"properties": {
@@ -256,6 +314,51 @@
 					"type": "number",
 					"default": 500000,
 					"description": "Maximum characters for the tool result body in the email (truncation applied beyond this)."
+				},
+				"llamaCopilot.ssh.host": {
+					"type": "string",
+					"default": "",
+					"description": "SSH host address for the remote Llama server."
+				},
+				"llamaCopilot.ssh.username": {
+					"type": "string",
+					"default": "",
+					"description": "SSH username for authentication."
+				},
+				"llamaCopilot.ssh.privateKeyPath": {
+					"type": "string",
+					"default": "",
+					"description": "Path to SSH private key file for authentication."
+				},
+				"llamaCopilot.ssh.port": {
+					"type": "number",
+					"default": 22,
+					"description": "SSH port."
+				},
+				"llamaCopilot.llamaServer.apiUrl": {
+					"type": "string",
+					"default": "http://localhost:8080",
+					"description": "Llama server API URL (on the remote host)."
+				},
+				"llamaCopilot.llamaServer.startCommand": {
+					"type": "string",
+					"default": "nohup llama-server --models-preset /path/to/preset.ini --host 0.0.0.0 --port 8080 --mlock > /tmp/llama-server.log 2>&1 &",
+					"description": "Command to start the llama server on the remote host."
+				},
+				"llamaCopilot.llamaServer.stopCommand": {
+					"type": "string",
+					"default": "pkill -f llama-server",
+					"description": "Command to stop the llama server on the remote host."
+				},
+				"llamaCopilot.llamaServer.shutdownCommand": {
+					"type": "string",
+					"default": "sudo shutdown -h now",
+					"description": "Command to shutdown the remote host."
+				},
+				"llamaCopilot.llamaServer.startModelRefreshDelayMs": {
+					"type": "number",
+					"default": 1000,
+					"description": "Delay in milliseconds after starting the llama server before refreshing the model list. Increase if your server takes longer to start or if you have many models."
 				}
 			}
 		}
@@ -273,16 +376,17 @@
 	},
 	"dependencies": {
 		"nodemailer": "^6.9.16",
+		"ssh2": "^1.17.0",
 		"undici": "^6.21.0"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.13.0",
 		"@stylistic/eslint-plugin": "^2.9.0",
-		"@types/nodemailer": "^6.4.17",
 		"@types/node": "^22",
-		"@types/vscode": "^1.104.0",
+		"@types/nodemailer": "^6.4.17",
+		"@types/ssh2": "^1.15.5",
 		"@vscode/dts": "^0.4.1",
-		"@vscode/vsce": "^3.7.1",
+		"@vscode/vsce": "^3.9.2",
 		"eslint": "^9.13.0",
 		"typescript": "^5.9.2",
 		"typescript-eslint": "^8.39.0",

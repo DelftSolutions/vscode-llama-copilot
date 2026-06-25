@@ -478,6 +478,94 @@ globs: ["**/*.tsx", "src/components/**"]
 
 3. When you mention a file matching the glob (e.g., `@src/components/Button.tsx`), the rule becomes available to the LLM automatically
 
+## Remote Server Management via SSH
+
+The extension supports managing a remote `llama-server` instance over SSH.
+
+### Setup
+
+Configure SSH connection settings in VS Code settings (Settings → Llama Copilot, or edit `settings.json` directly):
+
+```json
+{
+  "llamaCopilot.ssh.host": "your-server.example.com",
+  "llamaCopilot.ssh.username": "your-username",
+  "llamaCopilot.ssh.privateKeyPath": "~/.ssh/id_rsa",
+  "llamaCopilot.ssh.port": 22,
+  "llamaCopilot.llamaServer.apiUrl": "http://localhost:8080",
+  "llamaCopilot.llamaServer.startCommand": "nohup llama-server --models-preset /path/to/preset.ini --host 0.0.0.0 --port 8080 --mlock > /tmp/llama-server.log 2>&1 &",
+  "llamaCopilot.llamaServer.stopCommand": "pkill -f llama-server",
+  "llamaCopilot.llamaServer.shutdownCommand": "sudo shutdown -h now"
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| **SSH host** | Remote server hostname or IP address. |
+| **SSH username** | Username for SSH authentication. |
+| **SSH private key path** | Path to your SSH private key file (e.g., `~/.ssh/id_rsa`). Leave empty for keyboard/password auth. |
+| **SSH port** | SSH port (default: 22). |
+| **API URL** | The llama-server API URL on the remote host (typically `http://localhost:8080`). |
+| **Start command** | Command to start llama-server on the remote host. |
+| **Stop command** | Command to stop llama-server on the remote host (default: `pkill -f llama-server`). |
+| **Shutdown command** | Command to shut down the remote host (default: `sudo shutdown -h now`). |
+| **Start model refresh delay (ms)** | Delay after starting the server before refreshing the model list. Default: 5000 ms. |
+
+### Sudo and sudoers
+
+The extension executes configured commands over SSH via `ssh2.exec()`, which runs them non-interactively. If a command uses `sudo`, it must be configured for passwordless (NOPASSWD) sudo, otherwise the SSH command will hang waiting for a password prompt.
+
+**Which commands use `sudo` by default?**
+
+| Setting | Default value | Uses `sudo`? |
+|---------|---------------|--------------|
+| `llamaCopilot.llamaServer.startCommand` | `nohup llama-server ...` | No |
+| `llamaCopilot.llamaServer.stopCommand` | `pkill -f llama-server` | No |
+| `llamaCopilot.llamaServer.shutdownCommand` | `sudo shutdown -h now` | **Yes** |
+
+Only `shutdownCommand` uses `sudo` by default. However, you may choose to run `startCommand` or `stopCommand` with `sudo` in your environment (e.g., if llama-server binds to a privileged port below 1024). In that case, configure the sudoers entry for those commands as well.
+
+**Configuring passwordless sudo**
+
+Create a file `/etc/sudoers.d/llama-copilot` on the remote host (use `visudo -f /etc/sudoers.d/llama-copilot`):
+
+```sudoers
+your-username ALL=(root) NOPASSWD: /sbin/shutdown
+```
+
+Adjust the path (`/sbin/shutdown`, `/usr/sbin/shutdown`, etc.) to match your system. You can find it with `which shutdown` on the remote host.
+
+If you also use `sudo` with `startCommand` or `stopCommand`, add entries for the specific binaries only (principle of least privilege).
+
+### Status Bar
+
+Once SSH is configured, the VS Code status bar shows real-time information about your remote server:
+
+- **Connection status** — Connecting (spinning icon) / Running / Stopped (slash icon)
+- **RAM usage** — Displays used memory and percentage (e.g., `24 GB / 64 GB (38%)`)
+- **Server status** — Running, stopped, or connecting
+
+Click the status bar item to refresh the model list.
+
+### Command Palette Commands
+
+All server management actions are available from the Command Palette (Ctrl+Shift+P / Cmd+Shift+P):
+
+| Command | Description |
+|---------|-------------|
+| **Llama Copilot: Start Llama Server** | Starts the llama-server using the configured `startCommand`. |
+| **Llama Copilot: Stop Llama Server** | Stops the llama-server using the configured `stopCommand`. |
+| **Llama Copilot: Shutdown Server** | Shuts down the remote host (requires confirmation). |
+| **Llama Copilot: Refresh Status** | Manually refreshes the server status and model list. |
+
+### How It Works
+
+The extension polls the remote server over SSH to gather status information:
+
+1. **RAM Usage** — Runs system commands to read total memory and calculate used memory from page statistics. On macOS, it uses `sysctl -n hw.memsize` and `vm_stat`. The polling interval is 1 second.
+2. **Server Status** — Checks if `llama-server` is running using `pgrep -f llama-server`.
+3. **Auto-reconnect** — If the SSH connection drops, the extension automatically attempts to reconnect on the next poll cycle.
+
 ## Usage
 
 ### Selecting Models
@@ -522,6 +610,13 @@ Use the command "Open Endpoint Settings" to quickly access the configuration, or
 - Verify the parameter names match llama-server's API (check [llama-server documentation](https://github.com/ggml-org/llama.cpp))
 - Remember that model-level `requestBody` overrides endpoint-level `requestBody`
 - Check the VS Code output panel for API request/response logs
+
+### SSH Connection Issues
+
+- **Connection fails** — Verify SSH connectivity from your local machine (`ssh user@host`). Ensure the private key is readable and not passphrase-protected (or use an SSH agent).
+- **`sudo` command fails** — If you see `sudo: a terminal is required` or a password prompt in the error output, add a `NOPASSWD` rule for the required command(s) in `/etc/sudoers.d/` (see [Sudo and sudoers](#sudo-and-sudoers)).
+- **RAM usage not showing** — The RAM monitoring commands are currently macOS-specific (`sysctl` and `vm_stat`). On Linux, RAM data may not be available.
+- **Server status stuck on "connecting"** — Check that the SSH host is reachable and credentials are correct. Look at the "LLaMA Server API" output channel for debug messages.
 
 ## Links
 

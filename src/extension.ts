@@ -11,10 +11,16 @@ import {
 } from './config';
 import { sendTestSmtpEmail } from './smtpMail';
 import { InlineCompletionProvider } from './inlineCompletion/provider';
+import { LlamaServerManager } from './llamaServerManager';
+import { StatusBarController } from './statusBarController';
 
 let provider: LlamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
 let inlineCompletionDisposable: vscode.Disposable | undefined;
+
+// Llama Server SSH management
+let llamaServerManager: LlamaServerManager | undefined;
+let statusBarController: StatusBarController | undefined;
 
 /**
  * Normalize endpoint URL by stripping trailing `/` or `/v1`
@@ -48,11 +54,47 @@ function normalizeEndpoints(endpoints: EndpointsConfig): EndpointsConfig {
 
 export function activate(context: vscode.ExtensionContext) {
 	// Create output channel for API logging
-	const outputChannel = vscode.window.createOutputChannel('LLaMA Server API');
+	const outputChannel = vscode.window.createOutputChannel('LLaMA Server API', { log: true });
 	context.subscriptions.push(outputChannel);
-	
+
 	// Initialize logger with output channel
 	initializeLogger(outputChannel);
+
+	// Initialize Llama Server SSH management
+	llamaServerManager = new LlamaServerManager(outputChannel);
+
+	// Create status bar controller (provider is set after registerProvider below)
+	let providerRef: typeof provider = undefined;
+
+	statusBarController = new StatusBarController(context, llamaServerManager, outputChannel, () => {
+		providerRef?.fireChangeEvent();
+	});
+
+	// Listen for SSH config changes
+	const updateSshConfig = () => {
+		statusBarController?.updateSshConfig();
+		// Update the when condition for command palette visibility
+		vscode.commands.executeCommand(
+			'setContext',
+			'llamaCopilot.sshConfigured',
+			!!vscode.workspace.getConfiguration('llamaCopilot').get<string>('ssh.host') &&
+			!!vscode.workspace.getConfiguration('llamaCopilot').get<string>('ssh.username')
+		);
+	};
+
+	// Listen for SSH config changes
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
+			if (
+				e.affectsConfiguration('llamaCopilot.ssh.host') ||
+				e.affectsConfiguration('llamaCopilot.ssh.username') ||
+				e.affectsConfiguration('llamaCopilot.ssh.privateKeyPath') ||
+				e.affectsConfiguration('llamaCopilot.ssh.port')
+			) {
+				updateSshConfig();
+			}
+		})
+	);
 
 	// Helper function to register the provider
 	const registerProvider = (endpoints: EndpointsConfig) => {
@@ -78,7 +120,10 @@ export function activate(context: vscode.ExtensionContext) {
 		);
 
 		context.subscriptions.push(providerDisposable);
-		
+
+		// Update the ref used by status bar controller
+		providerRef = provider;
+
 		// Return the provider so we can fire events on it
 		return provider;
 	};
@@ -120,6 +165,9 @@ export function activate(context: vscode.ExtensionContext) {
 	registerProvider(normalizeEndpoints(endpoints));
 	updateInlineCompletionProvider(normalizeEndpoints(endpoints));
 
+	// Initialize SSH config
+	updateSshConfig();
+
 	// Listen for configuration changes
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
 		if (e.affectsConfiguration(endpointsConfigKey())) {
@@ -130,7 +178,7 @@ export function activate(context: vscode.ExtensionContext) {
 			// Unregister old provider and register new one with updated endpoints
 			const newProvider = registerProvider(normalizeEndpoints(newEndpoints));
 			updateInlineCompletionProvider(normalizeEndpoints(newEndpoints));
-			
+
 			// Fire change event on the new provider asynchronously to ensure
 			// the provider is fully registered before notifying VSCode
 			if (newProvider) {
@@ -163,5 +211,13 @@ export function deactivate() {
 	if (inlineCompletionDisposable) {
 		inlineCompletionDisposable.dispose();
 		inlineCompletionDisposable = undefined;
+	}
+	if (llamaServerManager) {
+		llamaServerManager.dispose();
+		llamaServerManager = undefined;
+	}
+	if (statusBarController) {
+		statusBarController.dispose();
+		statusBarController = undefined;
 	}
 }

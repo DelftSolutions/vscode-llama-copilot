@@ -180,6 +180,8 @@ export async function provideLanguageModelChatInformation(
 				const maxOutputTokens =
 					modelConfig?.maxOutputTokens ?? calculateMaxOutputTokens(effectiveContextSize);
 				const maxInputTokens = Math.max(1, effectiveContextSize - maxOutputTokens);
+				// Mark the first model across all endpoints as default
+				const isFirstModel = allModels.length === 0 && chatModels.indexOf(model) === 0;
 				allModels.push({
 					id: `${model.id}@${endpointId}`,
 					name: `${model.id}@${endpointId}`,
@@ -190,6 +192,7 @@ export async function provideLanguageModelChatInformation(
 					version: '1.0.0',
 					capabilities: getMergedCapabilities(modelConfig, hasVisionCapability(model)),
 					isUserSelectable: true,
+					isDefault: isFirstModel,
 				});
 			}
 		} catch (error) {
