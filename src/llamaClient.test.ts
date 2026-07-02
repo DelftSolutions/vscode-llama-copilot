@@ -104,6 +104,54 @@ describe('convertVSCodeMessagesToOpenAI', () => {
 		expect(result[0].reasoning_content).toBe('real thinking');
 	});
 
+	it('uses tracker when reasoningSource is tracker', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		const result = convertVSCodeMessagesToOpenAI(messages, {
+			reasoningSource: 'tracker',
+			getThinkingTokens: (msg) => {
+				for (const p of msg.content) {
+					if (p instanceof LanguageModelToolCallPart && p.callId === 'c1') {
+						return 'tracker reasoning';
+					}
+				}
+				return undefined;
+			},
+		});
+		expect(result[0].reasoning_content).toBe('tracker reasoning');
+	});
+
+	it('roundtrip ignores getThinkingTokens even if provided', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('round-trip reasoning'),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		const result = convertVSCodeMessagesToOpenAI(messages, {
+			reasoningSource: 'roundtrip',
+			getThinkingTokens: () => 'should not appear',
+		});
+		expect(result[0].reasoning_content).toBe('round-trip reasoning');
+	});
+
+	it('none omits both roundtrip and tracker reasoning', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('thinking'),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		const result = convertVSCodeMessagesToOpenAI(messages, {
+			reasoningSource: 'none',
+			getThinkingTokens: () => 'should not appear',
+		});
+		expect(result[0].reasoning_content).toBeUndefined();
+	});
+
 	it('converts tool result messages', () => {
 		const messages = [
 			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [

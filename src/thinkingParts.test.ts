@@ -7,7 +7,7 @@ import {
 	LanguageModelToolResultPart,
 	LanguageModelThinkingPart,
 } from 'vscode';
-import { extractReasoningFromAssistantMessage, isNewUserMessage } from './thinkingParts';
+import { extractReasoningFromAssistantMessage, isNewUserMessage, hasIncomingThinkingParts, getReasoningSource } from './thinkingParts';
 
 describe('extractReasoningFromAssistantMessage', () => {
 	it('returns undefined when no thinking parts present', () => {
@@ -102,5 +102,97 @@ describe('isNewUserMessage', () => {
 			]),
 		];
 		expect(isNewUserMessage(messages)).toBe(false);
+	});
+});
+
+describe('hasIncomingThinkingParts', () => {
+	it('returns false when no assistant messages have thinking parts', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelTextPart('hello'),
+			]),
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelTextPart('answer'),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		expect(hasIncomingThinkingParts(messages)).toBe(false);
+	});
+
+	it('returns true when an assistant message has a thinking part', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('reasoning'),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		expect(hasIncomingThinkingParts(messages)).toBe(true);
+	});
+
+	it('returns false when only reasoning_done markers exist', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('', undefined, { vscode_reasoning_done: true }),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+		];
+		expect(hasIncomingThinkingParts(messages)).toBe(false);
+	});
+
+	it('ignores user messages with thinking-like parts', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelTextPart('user text'),
+			]),
+		];
+		expect(hasIncomingThinkingParts(messages)).toBe(false);
+	});
+});
+
+describe('getReasoningSource', () => {
+	it('returns none for new user message', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelTextPart('hello'),
+			]),
+		];
+		expect(getReasoningSource(messages, true)).toBe('none');
+	});
+
+	it('returns roundtrip when thinking parts exist', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('reasoning'),
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelToolResultPart('c1', [new LanguageModelTextPart('result')]),
+			]),
+		];
+		expect(getReasoningSource(messages, false)).toBe('roundtrip');
+	});
+
+	it('returns tracker when no thinking parts but tracker has data', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelToolResultPart('c1', [new LanguageModelTextPart('result')]),
+			]),
+		];
+		expect(getReasoningSource(messages, true)).toBe('tracker');
+	});
+
+	it('returns none when no thinking parts and tracker is empty', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelToolCallPart('c1', 'tool', {}),
+			]),
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.User, [
+				new LanguageModelToolResultPart('c1', [new LanguageModelTextPart('result')]),
+			]),
+		];
+		expect(getReasoningSource(messages, false)).toBe('none');
 	});
 });

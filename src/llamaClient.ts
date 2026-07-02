@@ -27,7 +27,7 @@ import {
 	InfillRequest,
 	InfillResponse,
 } from './types';
-import { extractReasoningFromAssistantMessage, isNewUserMessage as isNewUserMessageCheck } from './thinkingParts';
+import { extractReasoningFromAssistantMessage, isNewUserMessage as isNewUserMessageCheck, type ReasoningSource } from './thinkingParts';
 import { fetch, Agent } from 'undici';
 import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
 
@@ -323,13 +323,20 @@ export function mapToolModeToToolChoice(
 
 /**
  * Convert VS Code messages to OpenAI format.
- * Extracts reasoning from LanguageModelThinkingPart in assistant messages (round-trip).
+ * Extracts reasoning from LanguageModelThinkingPart in assistant messages (round-trip),
+ * or from the ThinkingTokensTracker fallback when reasoningSource is 'tracker'.
  */
 export function convertVSCodeMessagesToOpenAI(
 	messages: readonly LanguageModelChatRequestMessage[],
-	options?: { isNewUserMessage?: boolean; allowMultimodal?: boolean }
+	options?: {
+		isNewUserMessage?: boolean;
+		allowMultimodal?: boolean;
+		reasoningSource?: ReasoningSource;
+		getThinkingTokens?: (msg: LanguageModelChatRequestMessage) => string | undefined;
+	}
 ): OpenAIChatMessage[] {
-	const isNew = options?.isNewUserMessage ?? false;
+	const reasoningSource = options?.reasoningSource
+		?? (options?.isNewUserMessage ? 'none' : 'roundtrip');
 	const openAIMessages: OpenAIChatMessage[] = [];
 
 	for (const msg of messages) {
@@ -376,9 +383,13 @@ export function convertVSCodeMessagesToOpenAI(
 				tool_calls: toolCalls,
 			};
 
-			// Extract reasoning from ThinkingPart round-trip (replaces tracker)
-			if (!isNew) {
+			if (reasoningSource === 'roundtrip') {
 				const reasoning = extractReasoningFromAssistantMessage(msg);
+				if (reasoning) {
+					assistantMsg.reasoning_content = reasoning;
+				}
+			} else if (reasoningSource === 'tracker' && options?.getThinkingTokens) {
+				const reasoning = options.getThinkingTokens(msg);
 				if (reasoning) {
 					assistantMsg.reasoning_content = reasoning;
 				}
@@ -1084,6 +1095,8 @@ export async function prepareCompletionRequest(
 	messages: readonly LanguageModelChatRequestMessage[],
 	options: {
 		isNewUserMessage?: boolean;
+		reasoningSource?: ReasoningSource;
+		getThinkingTokens?: (msg: LanguageModelChatRequestMessage) => string | undefined;
 	},
 	modelLimits: { maxInputTokens: number; maxOutputTokens: number },
 	apiToken?: string,
@@ -1094,7 +1107,11 @@ export async function prepareCompletionRequest(
 ): Promise<PreparedCompletionRequest> {
 	const openAIMessages = convertVSCodeMessagesToOpenAI(
 		messages,
-		{ isNewUserMessage: options.isNewUserMessage ?? false }
+		{
+			isNewUserMessage: options.isNewUserMessage ?? false,
+			reasoningSource: options.reasoningSource,
+			getThinkingTokens: options.getThinkingTokens,
+		}
 	);
 
 	const limit = modelLimits.maxInputTokens + modelLimits.maxOutputTokens * 0.2;

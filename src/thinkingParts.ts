@@ -61,3 +61,39 @@ export function isNewUserMessage(messages: readonly vscode.LanguageModelChatRequ
 		last.role === vscode.LanguageModelChatMessageRole.User && !hasToolResults(last)
 	);
 }
+
+/**
+ * True if any assistant message in the history contains a non-empty
+ * LanguageModelThinkingPart (excluding vscode_reasoning_done markers).
+ *
+ * Used to decide whether the VS Code host is round-tripping thinking parts;
+ * when false, the ThinkingTokensTracker fallback is used instead.
+ */
+export function hasIncomingThinkingParts(messages: readonly vscode.LanguageModelChatRequestMessage[]): boolean {
+	for (const msg of messages) {
+		if (msg.role !== vscode.LanguageModelChatMessageRole.Assistant) continue;
+		if (extractReasoningFromAssistantMessage(msg) !== undefined) return true;
+	}
+	return false;
+}
+
+export type ReasoningSource = 'roundtrip' | 'tracker' | 'none';
+
+/**
+ * Decide where reasoning_content should come from for this request.
+ *
+ * - 'none'      — new user turn; exclude all reasoning.
+ * - 'roundtrip' — VS Code provided ThinkingParts in the message history.
+ * - 'tracker'   — No ThinkingParts found; fall back to in-memory tracker.
+ *
+ * Temporary gate — delete when VS Code round-trips reliably (see ThinkingTokensTracker).
+ */
+export function getReasoningSource(
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
+	trackerHasData: boolean
+): ReasoningSource {
+	if (isNewUserMessage(messages)) return 'none';
+	if (hasIncomingThinkingParts(messages)) return 'roundtrip';
+	if (trackerHasData) return 'tracker';
+	return 'none';
+}
