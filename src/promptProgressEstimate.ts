@@ -1,5 +1,5 @@
-/** Do not show status bar before this many ms of prompt processing have elapsed. */
-export const MIN_ELAPSED_MS = 10_000;
+/** Do not show status bar before this many ms of prompt processing have elapsed. Use getMinPromptProgressElapsedMs() from config. */
+export const DEFAULT_MIN_ELAPSED_MS = 10_000;
 
 export interface PromptProgressInput {
 	total: number;
@@ -16,16 +16,17 @@ export interface PromptProgressEstimateResult {
 /**
  * Estimate remaining prompt processing time using quadratic scaling (time ∝ processed²).
  * Returns whether to show the status bar, remaining ms, and a quadratic-corrected display percent.
- * Status bar is shown only when at least MIN_ELAPSED_MS have passed and estimated remaining >= threshold.
+ * Status bar is shown only when at least minElapsedMs have passed and estimated remaining >= threshold.
  */
 export function estimatePromptProgress(
 	input: PromptProgressInput,
-	thresholdSeconds: number
+	thresholdSeconds: number,
+	minElapsedMs: number = DEFAULT_MIN_ELAPSED_MS
 ): PromptProgressEstimateResult {
 	if (thresholdSeconds <= 0) {
 		return { showStatusBar: false, remainingMs: undefined, percent: undefined };
 	}
-	if (input.time_ms < MIN_ELAPSED_MS) {
+	if (input.time_ms < minElapsedMs) {
 		return { showStatusBar: false, remainingMs: undefined, percent: undefined };
 	}
 	if (input.total <= 0 || input.processed < 1) {

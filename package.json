@@ -137,6 +137,11 @@
 					"default": 120,
 					"description": "Show status bar during prompt processing when estimated remaining time exceeds this many seconds. Set to 0 to disable. Prompt processing time is estimated assuming quadratic scaling with prompt length."
 				},
+				"llamaCopilot.minPromptProgressElapsedMs": {
+					"type": "number",
+					"default": 10000,
+					"description": "Minimum milliseconds of prompt processing before showing progress. Lower this to see progress on faster models. Set to 0 to show progress immediately."
+				},
 				"llamaCopilot.enableCursorRules": {
 					"type": "boolean",
 					"default": true,

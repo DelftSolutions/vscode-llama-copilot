@@ -63,6 +63,14 @@ export function isShowAllModels(): boolean {
 }
 
 /**
+ * Minimum milliseconds of prompt processing before showing progress.
+ * Default 10000 (10 seconds). Set to 0 to show progress immediately.
+ */
+export function getMinPromptProgressElapsedMs(): number {
+	return getConfig().get<number>('minPromptProgressElapsedMs', 10000);
+}
+
+/**
  * Check if cursor rules feature is enabled.
  */
 export function isCursorRulesEnabled(): boolean {
