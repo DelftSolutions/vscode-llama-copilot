@@ -163,11 +163,15 @@ export function logResponse(
 /**
  * Log an API error
  */
-export function logError(error: Error | string, context?: string): void {
+export function logError(error: Error | string, context?: string, details?: string): void {
 	const timestamp = getTimestamp();
 	const errorMessage = error instanceof Error ? error.message : error;
 	const contextStr = context ? ` [${context}]` : '';
 	log(`[${timestamp}] ERROR${contextStr}: ${errorMessage}`);
+
+	if (details) {
+		log(`Details: ${details}`);
+	}
 	
 	if (error instanceof Error && error.stack) {
 		log(`Stack: ${error.stack}`);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getErrorCode, normalizeFetchError, isConnectionResetError } from './errorUtils';
+import { getErrorCode, normalizeFetchError, isConnectionResetError, describeFetchError } from './errorUtils';
 
 describe('getErrorCode', () => {
 	it('returns code from error', () => {
@@ -107,9 +107,87 @@ describe('normalizeFetchError', () => {
 		expect(msg).toContain('Connection to the server failed');
 	});
 
+	it('includes cause message in generic fetch failed fallback', () => {
+		const cause = Object.assign(new Error('connect ECONNABORTED 10.0.0.1:443'), { code: 'ECONNABORTED' });
+		const err = new Error('fetch failed', { cause });
+		const msg = normalizeFetchError(err)!;
+		expect(msg).toContain('connect ECONNABORTED 10.0.0.1:443');
+		expect(msg).toContain('Connection to the server failed');
+	});
+
 	it('treats error with cause as fetch error', () => {
 		const err = new Error('other', { cause: new Error() });
 		const msg = normalizeFetchError(err);
 		expect(msg).toBeDefined();
+	});
+});
+
+describe('describeFetchError', () => {
+	it('extracts code, syscall, address, port from cause', () => {
+		const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8080'), {
+			code: 'ECONNREFUSED',
+			syscall: 'connect',
+			address: '127.0.0.1',
+			port: 8080,
+		});
+		const err = new Error('fetch failed', { cause });
+		const details = describeFetchError(err);
+		expect(details.code).toBe('ECONNREFUSED');
+		expect(details.syscall).toBe('connect');
+		expect(details.address).toBe('127.0.0.1');
+		expect(details.port).toBe(8080);
+		expect(details.causeMessage).toBe('connect ECONNREFUSED 127.0.0.1:8080');
+		expect(details.formattedSummary).toContain('code=ECONNREFUSED');
+		expect(details.formattedSummary).toContain('address=127.0.0.1');
+		expect(details.formattedSummary).toContain('port=8080');
+	});
+
+	it('extracts hostname from cause', () => {
+		const cause = Object.assign(new Error('getaddrinfo ENOTFOUND badhost.local'), {
+			code: 'ENOTFOUND',
+			hostname: 'badhost.local',
+			syscall: 'getaddrinfo',
+		});
+		const err = new Error('fetch failed', { cause });
+		const details = describeFetchError(err);
+		expect(details.hostname).toBe('badhost.local');
+		expect(details.formattedSummary).toContain('hostname=badhost.local');
+	});
+
+	it('walks nested causes (cause.cause)', () => {
+		const inner = Object.assign(new Error('connect ECONNREFUSED ::1:8080'), {
+			code: 'ECONNREFUSED',
+			syscall: 'connect',
+			address: '::1',
+			port: 8080,
+		});
+		const middle = new Error('wrapper', { cause: inner });
+		const outer = new Error('fetch failed', { cause: middle });
+		const details = describeFetchError(outer);
+		expect(details.code).toBe('ECONNREFUSED');
+		expect(details.address).toBe('::1');
+		expect(details.port).toBe(8080);
+		expect(details.causeMessage).toBe('wrapper');
+	});
+
+	it('returns empty summary for non-fetch errors', () => {
+		const err = new Error('something else');
+		const details = describeFetchError(err);
+		expect(details.formattedSummary).toBe('');
+		expect(details.code).toBeUndefined();
+	});
+
+	it('returns cause message only when no system fields exist', () => {
+		const cause = new Error('some network problem');
+		const err = new Error('fetch failed', { cause });
+		const details = describeFetchError(err);
+		expect(details.causeMessage).toBe('some network problem');
+		expect(details.formattedSummary).toBe('some network problem');
+	});
+
+	it('handles non-Error values gracefully', () => {
+		expect(describeFetchError(null).formattedSummary).toBe('');
+		expect(describeFetchError(undefined).formattedSummary).toBe('');
+		expect(describeFetchError('string').formattedSummary).toBe('');
 	});
 });

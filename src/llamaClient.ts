@@ -1,10 +1,12 @@
 import {
 	LanguageModelChatMessage,
 	LanguageModelChatMessageRole,
+	LanguageModelChatRequestMessage,
 	LanguageModelTextPart,
 	LanguageModelToolCallPart,
 	LanguageModelToolResultPart,
 	LanguageModelChatTool,
+	LanguageModelChatToolMode,
 } from 'vscode';
 import {
 	ModelsResponse,
@@ -14,20 +16,28 @@ import {
 	ApplyTemplateResponse,
 	PreparedCompletionRequest,
 	OpenAIChatMessage,
+	OpenAIContentPart,
 	OpenAITool,
 	OpenAIToolCall,
 	OpenAIChatCompletionChunk,
 	OpenAIChatCompletionChunkWithProgress,
+	OpenAIUsage,
+	LlamaServerTimings,
 	StreamToolCallDeltaAccumulator,
 	InfillRequest,
 	InfillResponse,
 } from './types';
+import { extractReasoningFromAssistantMessage, isNewUserMessage as isNewUserMessageCheck } from './thinkingParts';
 import { fetch, Agent } from 'undici';
 import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
 
-import { normalizeFetchError, isConnectionResetError } from './errorUtils';
+import { normalizeFetchError, isConnectionResetError, describeFetchError } from './errorUtils';
 import { parseServerError, formatServerErrorMessage } from './serverErrorUtils';
+import { computeRateLimitDelayMs, RATE_LIMIT_RETRY_MAX_ATTEMPTS, RATE_LIMIT_RETRY_BASE_DELAY_MS } from './rateLimitUtils';
+import { computeThinkingBudgetTokens } from './modelInfo';
 import * as crypto from 'crypto';
+
+type UndiciResponse = Awaited<ReturnType<typeof fetch>>;
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 1200 * 1000;
 
@@ -74,6 +84,44 @@ async function withConnectionResetRetry<T>(
 }
 
 /**
+ * Retries a fetch on HTTP 429 (rate limit) with exponential backoff or Retry-After.
+ * Returns the final Response (which may still be 429 if all retries are exhausted).
+ */
+async function fetchWithRateLimitRetry(
+	doFetch: () => Promise<UndiciResponse>,
+	options?: { signal?: AbortSignal; maxAttempts?: number; baseDelayMs?: number }
+): Promise<UndiciResponse> {
+	const maxAttempts = options?.maxAttempts ?? RATE_LIMIT_RETRY_MAX_ATTEMPTS;
+	const baseDelayMs = options?.baseDelayMs ?? RATE_LIMIT_RETRY_BASE_DELAY_MS;
+	const signal = options?.signal;
+
+	for (let attempt = 0; ; attempt++) {
+		const response = await doFetch();
+		if (response.status !== 429 || attempt >= maxAttempts - 1) {
+			return response;
+		}
+		await response.text().catch(() => {});
+		const retryAfter = response.headers.get('retry-after');
+		const delay = computeRateLimitDelayMs(attempt, retryAfter, baseDelayMs);
+		logError(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`, 'rateLimitRetry');
+		await delayMs(delay, signal);
+	}
+}
+
+/**
+ * Throw a formatted error if the response is not OK.
+ * Reads the response body, parses llama-server JSON errors, and throws a user-friendly message.
+ */
+async function throwIfNotOk(response: UndiciResponse, context: string): Promise<void> {
+	if (response.ok) return;
+	const errorText = await response.text().catch(() => 'Unknown error');
+	logError(`Failed in ${context}: ${response.statusText}`, context);
+	const parsed = parseServerError(errorText);
+	const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+	throw new Error(formatted);
+}
+
+/**
  * Centralized API error handling: rethrow known errors, log, normalize fetch errors, then rethrow.
  */
 function handleApiError(
@@ -86,8 +134,12 @@ function handleApiError(
 	if (error instanceof Error && prefixes.some((p) => error.message.includes(p))) {
 		throw error;
 	}
-	logError(error instanceof Error ? error : String(error), context);
 	const normalized = normalizeFetchError(error, url);
+	const details = describeFetchError(error);
+	const urlDetail = url ? ` url=${url}` : '';
+	const logDetails = [details.formattedSummary, urlDetail.trim()].filter(Boolean).join(' | ') || undefined;
+	const logMessage = normalized ?? (error instanceof Error ? error.message : String(error));
+	logError(logMessage, context, logDetails);
 	if (normalized) {
 		throw new Error(normalized);
 	}
@@ -131,22 +183,17 @@ export async function fetchModels(
 	try {
 		return await withConnectionResetRetry(async () => {
 			logRequest('GET', url, headers);
-			const response = await fetch(url, { headers, dispatcher });
-
-			if (!response.ok) {
-				const errorText = await response.text().catch(() => 'Unknown error');
-				logError(`Failed to fetch models: ${response.statusText}`, 'fetchModels');
-				const parsed = parseServerError(errorText);
-				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-				throw new Error(formatted);
-			}
+			const response = await fetchWithRateLimitRetry(
+				() => fetch(url, { headers, dispatcher })
+			);
+			await throwIfNotOk(response, 'fetchModels');
 
 			const data = await response.json() as ModelsResponse;
 			logResponse(response.status, response.statusText, data);
 			return data;
 		});
 	} catch (error) {
-		handleApiError(error, 'fetchModels', 'Failed to fetch models', url);
+		handleApiError(error, 'fetchModels', ['Failed in fetchModels', 'Rate limit exceeded'], url);
 	}
 }
 
@@ -227,27 +274,65 @@ export function convertVSCodeToolsToOpenAI(
 }
 
 /**
- * Convert VS Code messages to OpenAI format
- * Handles thinking tokens: includes them only for tool-call-related assistant messages
- * Removes thinking tokens when user sends a new message (by not including reasoning_content)
- * 
- * @param messages VS Code messages to convert
- * @param getThinkingTokens Optional function to retrieve thinking tokens for a message
- * @param isNewUserMessage Whether the last message is a new user message (not a tool result)
+ * Convert a single VS Code input part to an OpenAI content part.
+ * Returns undefined for parts that cannot be converted (thinking parts, unknown types).
+ */
+export function convertInputPartToOpenAI(
+	part: unknown,
+	options?: { allowMultimodal?: boolean }
+): OpenAIContentPart | undefined {
+	if (part instanceof LanguageModelTextPart) {
+		return { type: 'text', text: part.value };
+	}
+
+	// Duck-type LanguageModelDataPart (has data: Uint8Array and mimeType: string)
+	if (part != null && typeof part === 'object' && 'data' in part && 'mimeType' in part) {
+		const dp = part as { data: Uint8Array; mimeType: string };
+		if (!options?.allowMultimodal) return undefined;
+		if (dp.mimeType.startsWith('image/')) {
+			const b64 = Buffer.from(dp.data).toString('base64');
+			return { type: 'image_url', image_url: { url: `data:${dp.mimeType};base64,${b64}` } };
+		}
+		return { type: 'text', text: new TextDecoder().decode(dp.data) };
+	}
+
+	// Duck-type LanguageModelPromptTsxPart (has value: unknown, constructor name check)
+	if (part != null && typeof part === 'object' && 'value' in part &&
+		(part.constructor?.name === 'LanguageModelPromptTsxPart')) {
+		return { type: 'text', text: JSON.stringify((part as { value: unknown }).value) };
+	}
+
+	return undefined;
+}
+
+/**
+ * Map VS Code LanguageModelChatToolMode to OpenAI tool_choice string.
+ */
+export function mapToolModeToToolChoice(
+	toolMode: LanguageModelChatToolMode | undefined,
+	hasTools: boolean
+): 'none' | 'auto' | 'required' | undefined {
+	if (!hasTools) return undefined;
+	switch (toolMode) {
+		case LanguageModelChatToolMode.Required:
+			return 'required';
+		default:
+			return 'auto';
+	}
+}
+
+/**
+ * Convert VS Code messages to OpenAI format.
+ * Extracts reasoning from LanguageModelThinkingPart in assistant messages (round-trip).
  */
 export function convertVSCodeMessagesToOpenAI(
-	messages: LanguageModelChatMessage[],
-	getThinkingTokens?: (msg: LanguageModelChatMessage) => string | undefined,
-	isNewUserMessage: boolean = false
+	messages: readonly LanguageModelChatRequestMessage[],
+	options?: { isNewUserMessage?: boolean; allowMultimodal?: boolean }
 ): OpenAIChatMessage[] {
+	const isNew = options?.isNewUserMessage ?? false;
 	const openAIMessages: OpenAIChatMessage[] = [];
 
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-		if (msg instanceof Error) {
-			throw new Error('Invalid message format');
-		}
-
+	for (const msg of messages) {
 		// Extract text content
 		const textParts = msg.content
 			.filter((part): part is LanguageModelTextPart => part instanceof LanguageModelTextPart)
@@ -271,7 +356,6 @@ export function convertVSCodeMessagesToOpenAI(
 		} else if (msg.role === LanguageModelChatMessageRole.Assistant) {
 			role = 'assistant';
 		} else {
-			// System role or other - map to system
 			role = 'system';
 		}
 
@@ -292,14 +376,11 @@ export function convertVSCodeMessagesToOpenAI(
 				tool_calls: toolCalls,
 			};
 
-			// Include thinking tokens for tool-call messages if:
-			// 1. We have a function to get thinking tokens
-			// 2. This is NOT a new user message (if new user message, exclude thinking tokens)
-			// 3. We have thinking tokens available for this message
-			if (getThinkingTokens && !isNewUserMessage) {
-				const thinkingTokens = getThinkingTokens(msg);
-				if (thinkingTokens) {
-					assistantMsg.reasoning_content = thinkingTokens;
+			// Extract reasoning from ThinkingPart round-trip (replaces tracker)
+			if (!isNew) {
+				const reasoning = extractReasoningFromAssistantMessage(msg);
+				if (reasoning) {
+					assistantMsg.reasoning_content = reasoning;
 				}
 			}
 
@@ -307,9 +388,7 @@ export function convertVSCodeMessagesToOpenAI(
 		}
 		// Handle user messages with tool results
 		else if (role === 'user' && toolResultParts.length > 0) {
-			// Create tool role messages for each tool result
 			for (const toolResult of toolResultParts) {
-				const toolCallId = toolResult.callId;
 				const toolContent = toolResult.content
 					.filter((part): part is LanguageModelTextPart => part instanceof LanguageModelTextPart)
 					.map((part) => part.value)
@@ -318,11 +397,10 @@ export function convertVSCodeMessagesToOpenAI(
 				openAIMessages.push({
 					role: 'tool',
 					content: toolContent,
-					tool_call_id: toolCallId,
+					tool_call_id: toolResult.callId,
 				});
 			}
 
-			// If there's also text content, add it as a user message
 			if (textParts) {
 				openAIMessages.push({
 					role: 'user',
@@ -332,15 +410,10 @@ export function convertVSCodeMessagesToOpenAI(
 		}
 		// Handle regular messages
 		else {
-			const openAIMsg: OpenAIChatMessage = {
+			openAIMessages.push({
 				role,
 				content: textParts || null,
-			};
-
-			// For assistant messages without tool calls, we don't include thinking tokens
-			// (thinking tokens are only for tool-call messages)
-
-			openAIMessages.push(openAIMsg);
+			});
 		}
 	}
 
@@ -358,7 +431,17 @@ export function convertOpenAIMessageToVSCode(
 	toolCalls: LanguageModelToolCallPart[];
 	reasoningContent?: string;
 } {
-	const text = typeof message.content === 'string' ? message.content : message.content || '';
+	let text: string;
+	if (typeof message.content === 'string') {
+		text = message.content;
+	} else if (Array.isArray(message.content)) {
+		text = message.content
+			.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+			.map((p) => p.text)
+			.join('');
+	} else {
+		text = '';
+	}
 	
 	const toolCalls: LanguageModelToolCallPart[] = [];
 	if (message.tool_calls) {
@@ -417,19 +500,62 @@ function flushAccumulatedToolCalls(
 }
 
 /**
+ * Normalize usage from the best available source: the standard OpenAI usage object,
+ * llama-server timings, or a fallback prompt token count from prepareCompletionRequest.
+ * Returns undefined only when no usable data exists.
+ */
+export function normalizeStreamUsage(
+	usage: OpenAIUsage | undefined,
+	timings: LlamaServerTimings | undefined,
+	fallbackPromptTokens?: number
+): OpenAIUsage | undefined {
+	if (usage) {
+		const prompt = Math.max(0, usage.prompt_tokens);
+		const completion = Math.max(0, usage.completion_tokens);
+		return {
+			prompt_tokens: prompt,
+			completion_tokens: completion,
+			total_tokens: Math.max(0, usage.total_tokens) || (prompt + completion),
+			...(usage.prompt_tokens_details ? { prompt_tokens_details: usage.prompt_tokens_details } : {}),
+		};
+	}
+	if (timings) {
+		const prompt = Math.max(0, (timings.prompt_n ?? 0) + (timings.cache_n ?? 0));
+		const completion = Math.max(0, timings.predicted_n ?? 0);
+		if (prompt > 0 || completion > 0) {
+			return {
+				prompt_tokens: prompt,
+				completion_tokens: completion,
+				total_tokens: prompt + completion,
+			};
+		}
+	}
+	if (fallbackPromptTokens !== undefined && fallbackPromptTokens > 0) {
+		return {
+			prompt_tokens: fallbackPromptTokens,
+			completion_tokens: 0,
+			total_tokens: fallbackPromptTokens,
+		};
+	}
+	return undefined;
+}
+
+/**
  * Stream chat completion from OpenAI-compatible /v1/chat/completions endpoint
  * Returns an async generator that yields response parts (text, tool calls, thinking tokens)
  */
 export async function* streamChatCompletion(
 	serverUrl: string,
 	modelId: string,
-	messages: LanguageModelChatMessage[],
+	messages: readonly LanguageModelChatRequestMessage[],
 	options: {
 		tools?: readonly LanguageModelChatTool[];
 		max_tokens?: number;
-		getThinkingTokens?: (msg: LanguageModelChatMessage) => string | undefined;
+		toolMode?: LanguageModelChatToolMode;
+		modelOptions?: Record<string, unknown>;
 		isNewUserMessage?: boolean;
 		preparedRequest?: PreparedCompletionRequest;
+		thinkingBudgetFraction?: number;
 	},
 	apiToken?: string,
 	endpointHeaders?: Record<string, string>,
@@ -440,7 +566,8 @@ export async function* streamChatCompletion(
 	| { type: 'text'; content: string }
 	| { type: 'toolCall'; toolCall: LanguageModelToolCallPart }
 	| { type: 'thinking'; content: string }
-	| { type: 'prompt_progress'; total: number; cache: number; processed: number; time_ms: number },
+	| { type: 'prompt_progress'; total: number; cache: number; processed: number; time_ms: number }
+	| { type: 'usage'; usage: OpenAIUsage },
 	void,
 	unknown
 > {
@@ -449,8 +576,7 @@ export async function* streamChatCompletion(
 	// Use prepared request when provided; otherwise convert messages and use options.max_tokens
 	const openAIMessages = options.preparedRequest?.openAIMessages ?? convertVSCodeMessagesToOpenAI(
 		messages,
-		options.getThinkingTokens,
-		options.isNewUserMessage ?? false
+		{ isNewUserMessage: options.isNewUserMessage ?? false }
 	);
 	const max_tokens = options.preparedRequest?.max_tokens ?? options.max_tokens;
 
@@ -461,7 +587,7 @@ export async function* streamChatCompletion(
 		model: string;
 		messages: OpenAIChatMessage[];
 		tools?: OpenAITool[];
-		tool_choice?: 'auto' | 'none';
+		tool_choice?: 'none' | 'auto' | 'required';
 		stream: boolean;
 		max_tokens?: number;
 		reasoning_format?: 'deepseek';
@@ -473,21 +599,41 @@ export async function* streamChatCompletion(
 		messages: openAIMessages,
 		stream: true,
 		max_tokens,
-		reasoning_format: 'deepseek', // Enable thinking token extraction
-		parse_tool_calls: true, // Enable tool call parsing
-		parallel_tool_calls: true, // Enable parallel tool calls
-		cache_prompt: true, // Enable prompt caching
-		return_progress: true, // Request prompt_progress in stream (llama-server)
+		reasoning_format: 'deepseek',
+		parse_tool_calls: true,
+		parallel_tool_calls: true,
+		cache_prompt: true,
+		return_progress: true,
+		stream_options: { include_usage: true },
 	};
 
 	if (openAITools && openAITools.length > 0) {
 		requestBody.tools = openAITools;
-		requestBody.tool_choice = 'auto';
+		requestBody.tool_choice = mapToolModeToToolChoice(options.toolMode, true) ?? 'auto';
+	}
+
+	// Merge modelOptions from the provider into the request body
+	if (options.modelOptions) {
+		Object.assign(requestBody, options.modelOptions);
 	}
 
 	// Merge endpoint requestBody properties (endpoint config can override defaults)
 	if (endpointRequestBody) {
 		Object.assign(requestBody, endpointRequestBody);
+	}
+
+	// Auto-set thinking_budget_tokens unless the user already specified one explicitly
+	if (
+		options.thinkingBudgetFraction !== undefined &&
+		requestBody.thinking_budget_tokens === undefined
+	) {
+		const effectiveMaxTokens = requestBody.max_tokens;
+		if (typeof effectiveMaxTokens === 'number') {
+			const budget = computeThinkingBudgetTokens(effectiveMaxTokens, options.thinkingBudgetFraction);
+			if (budget !== undefined) {
+				requestBody.thinking_budget_tokens = budget;
+			}
+		}
 	}
 
 	const headers: Record<string, string> = {
@@ -507,13 +653,16 @@ export async function* streamChatCompletion(
 	try {
 		const reader = await withConnectionResetRetry(async () => {
 			logStreamStart('POST', url, requestBody);
-			const response = await fetch(url, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(requestBody),
-				dispatcher,
-				signal,
-			});
+			const response = await fetchWithRateLimitRetry(
+				() => fetch(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(requestBody),
+					dispatcher,
+					signal,
+				}),
+				{ signal }
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text().catch(() => 'Unknown error');
@@ -583,6 +732,18 @@ export async function* streamChatCompletion(
 							if (chunk.prompt_progress) {
 								const { total, cache, processed, time_ms } = chunk.prompt_progress;
 								yield { type: 'prompt_progress', total, cache, processed, time_ms };
+							}
+
+							// Yield usage from the final stream chunk (sent when stream_options.include_usage is true).
+							// llama-server sends this on a chunk with empty choices, so it must be checked before the guard below.
+							// Also handle timings as a fallback source for usage.
+							if (chunk.usage) {
+								yield { type: 'usage', usage: chunk.usage };
+							} else if (chunk.timings && (!chunk.choices || chunk.choices.length === 0)) {
+								const usage = normalizeStreamUsage(undefined, chunk.timings);
+								if (usage) {
+									yield { type: 'usage', usage };
+								}
 							}
 
 							if (!chunk.choices || chunk.choices.length === 0) {
@@ -681,7 +842,7 @@ export async function* streamChatCompletion(
 		handleApiError(
 			error,
 			'streamChatCompletion',
-			['Failed to stream chat completion', 'Response body is null'],
+			['Failed to stream chat completion', 'Response body is null', 'Rate limit exceeded', 'Llama-server reported an internal timeout'],
 			url
 		);
 	}
@@ -723,21 +884,17 @@ export async function applyTemplate(
 
 	try {
 		return await withConnectionResetRetry(async () => {
-			const response = await fetch(url, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(requestBody),
-				dispatcher,
-				signal,
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text().catch(() => 'Unknown error');
-				logError(`Failed to apply template: ${response.statusText}`, 'applyTemplate');
-				const parsed = parseServerError(errorText);
-				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-				throw new Error(formatted);
-			}
+			const response = await fetchWithRateLimitRetry(
+				() => fetch(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(requestBody),
+					dispatcher,
+					signal,
+				}),
+				{ signal }
+			);
+			await throwIfNotOk(response, 'applyTemplate');
 
 			const data = (await response.json()) as ApplyTemplateResponse;
 			return typeof data.prompt === 'string' ? data.prompt : '';
@@ -746,7 +903,7 @@ export async function applyTemplate(
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
 		}
-		handleApiError(error, 'applyTemplate', 'Failed to apply template', url);
+		handleApiError(error, 'applyTemplate', ['Failed in applyTemplate', 'Rate limit exceeded'], url);
 	}
 }
 
@@ -860,20 +1017,15 @@ export async function tokenize(
 	try {
 		return await withConnectionResetRetry(async () => {
 			logTokenizeRequest(url, headers, requestBody);
-			const response = await fetch(url, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(requestBody),
-				dispatcher,
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text().catch(() => 'Unknown error');
-				logError(`Failed to tokenize: ${response.statusText}`, 'tokenize');
-				const parsed = parseServerError(errorText);
-				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-				throw new Error(formatted);
-			}
+			const response = await fetchWithRateLimitRetry(
+				() => fetch(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(requestBody),
+					dispatcher,
+				})
+			);
+			await throwIfNotOk(response, 'tokenize');
 
 			const result = (await response.json()) as TokenizeResponse;
 			const tokenCount = Array.isArray(result.tokens) ? result.tokens.length : 0;
@@ -882,7 +1034,7 @@ export async function tokenize(
 			return tokenCount;
 		});
 	} catch (error) {
-		handleApiError(error, 'tokenize', 'Failed to tokenize', url);
+		handleApiError(error, 'tokenize', ['Failed in tokenize', 'Rate limit exceeded'], url);
 	}
 }
 
@@ -929,9 +1081,8 @@ export async function getTemplatedPromptTokenCount(
 export async function prepareCompletionRequest(
 	serverUrl: string,
 	modelId: string,
-	messages: LanguageModelChatMessage[],
+	messages: readonly LanguageModelChatRequestMessage[],
 	options: {
-		getThinkingTokens?: (msg: LanguageModelChatMessage) => string | undefined;
 		isNewUserMessage?: boolean;
 	},
 	modelLimits: { maxInputTokens: number; maxOutputTokens: number },
@@ -943,8 +1094,7 @@ export async function prepareCompletionRequest(
 ): Promise<PreparedCompletionRequest> {
 	const openAIMessages = convertVSCodeMessagesToOpenAI(
 		messages,
-		options.getThinkingTokens,
-		options.isNewUserMessage ?? false
+		{ isNewUserMessage: options.isNewUserMessage ?? false }
 	);
 
 	const limit = modelLimits.maxInputTokens + modelLimits.maxOutputTokens * 0.2;
@@ -1046,21 +1196,17 @@ export async function requestInfill(
 
 	try {
 		return await withConnectionResetRetry(async () => {
-			const response = await fetch(url, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(requestBody),
-				dispatcher,
-				signal,
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text().catch(() => 'Unknown error');
-				logError(`Failed to infill: ${response.statusText}`, 'requestInfill');
-				const parsed = parseServerError(errorText);
-				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-				throw new Error(formatted);
-			}
+			const response = await fetchWithRateLimitRetry(
+				() => fetch(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(requestBody),
+					dispatcher,
+					signal,
+				}),
+				{ signal }
+			);
+			await throwIfNotOk(response, 'requestInfill');
 
 			const data = (await response.json()) as InfillResponse;
 			return typeof data.content === 'string' ? data.content : '';
@@ -1069,6 +1215,6 @@ export async function requestInfill(
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
 		}
-		handleApiError(error, 'requestInfill', ['Failed to infill'], url);
+		handleApiError(error, 'requestInfill', ['Failed in requestInfill', 'Rate limit exceeded'], url);
 	}
 }

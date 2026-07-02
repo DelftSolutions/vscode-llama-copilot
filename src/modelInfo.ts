@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { fetchModels } from './llamaClient';
 import { EndpointsConfig, EndpointConfig, Model } from './types';
+import { normalizeFetchError, describeFetchError } from './errorUtils';
+import { logError } from './logger';
 
 /** Default context size when not provided by server or config */
 const DEFAULT_CONTEXT_SIZE = 128000;
@@ -59,6 +61,26 @@ export function getMergedModelConfig(
 	if (modelConfig?.requestBody) Object.assign(requestBody, modelConfig.requestBody);
 
 	return { headers, requestBody };
+}
+
+/** Default fraction of max_tokens allocated to thinking (thinking_budget_tokens). */
+export const DEFAULT_THINKING_BUDGET_FRACTION = 0.5;
+
+/** Resolve thinking budget fraction: model overrides endpoint, then falls back to default. */
+export function getThinkingBudgetFraction(
+	endpoints: EndpointsConfig,
+	endpointId: string,
+	baseModelId: string
+): number {
+	const endpointConfig = getEndpointConfig(endpoints, endpointId);
+	const modelConfig = endpointConfig.models?.[baseModelId];
+	return modelConfig?.thinkingBudgetFraction ?? endpointConfig.thinkingBudgetFraction ?? DEFAULT_THINKING_BUDGET_FRACTION;
+}
+
+/** Compute thinking_budget_tokens from max_tokens and fraction. Returns undefined when budget should not be set. */
+export function computeThinkingBudgetTokens(maxTokens: number, fraction: number): number | undefined {
+	if (fraction > 1 || maxTokens <= 0) return undefined;
+	return Math.floor(maxTokens * fraction);
 }
 
 /** Check if model has embeddings flag (embeddings-only, not chat). */
@@ -155,7 +177,6 @@ export function createModelInfoFromConfig(
 		maxOutputTokens,
 		version: '1.0.0',
 		capabilities: getMergedCapabilities(modelConfig),
-		isUserSelectable: true,
 	};
 }
 
@@ -205,11 +226,17 @@ export async function provideLanguageModelChatInformation(
 					maxOutputTokens,
 					version: '1.0.0',
 					capabilities: getMergedCapabilities(modelConfig, hasVisionCapability(model)),
-					isUserSelectable: true,
 				});
 			}
 		} catch (error) {
-			console.error(`Failed to fetch models from endpoint "${endpointId}":`, error);
+			const normalized = normalizeFetchError(error, endpointConfig.url);
+			const details = describeFetchError(error);
+			const message = normalized ?? (error instanceof Error ? error.message : String(error));
+			const logDetails = [
+				`endpoint=${endpointId}`,
+				details.formattedSummary,
+			].filter(Boolean).join(' | ') || undefined;
+			logError(message, `fetchModels(${endpointId})`, logDetails);
 		}
 		if (endpointConfig.models) {
 			for (const [modelId, modelConfig] of Object.entries(endpointConfig.models)) {

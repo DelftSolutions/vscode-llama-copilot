@@ -8,6 +8,7 @@ export interface ModelConfig {
 	requestBody?: Record<string, unknown>;
 	contextSize?: number;
 	maxOutputTokens?: number;
+	thinkingBudgetFraction?: number;
 	capabilities?: LanguageModelChatCapabilities;
 }
 
@@ -19,6 +20,7 @@ export interface EndpointConfig {
 	apiToken?: string;
 	headers?: Record<string, string>;
 	requestBody?: Record<string, unknown>;
+	thinkingBudgetFraction?: number;
 	models?: Record<string, ModelConfig>;
 }
 
@@ -133,14 +135,21 @@ export interface OpenAITool {
 }
 
 /**
+ * Content part for multimodal OpenAI messages.
+ */
+export type OpenAIContentPart =
+	| { type: 'text'; text: string }
+	| { type: 'image_url'; image_url: { url: string } };
+
+/**
  * Chat message in OpenAI format
  */
 export interface OpenAIChatMessage {
 	role: 'system' | 'user' | 'assistant' | 'tool';
-	content: string | null;
+	content: string | null | OpenAIContentPart[];
 	tool_calls?: OpenAIToolCall[];
-	tool_call_id?: string; // For tool role messages
-	reasoning_content?: string; // For thinking tokens (llama-server extension)
+	tool_call_id?: string;
+	reasoning_content?: string;
 }
 
 /**
@@ -159,7 +168,7 @@ export interface OpenAIChatCompletionRequest {
 	model: string;
 	messages: OpenAIChatMessage[];
 	tools?: OpenAITool[];
-	tool_choice?: 'none' | 'auto' | { type: 'function'; function: { name: string } };
+	tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 	stream?: boolean;
 	temperature?: number;
 	top_p?: number;
@@ -170,6 +179,7 @@ export interface OpenAIChatCompletionRequest {
 	seed?: number;
 	reasoning_format?: 'none' | 'deepseek' | 'deepseek-legacy';
 	thinking_forced_open?: boolean;
+	thinking_budget_tokens?: number;
 	parse_tool_calls?: boolean;
 	parallel_tool_calls?: boolean;
 }
@@ -237,11 +247,42 @@ export interface PromptProgress {
 }
 
 /**
- * SSE chunk from llama-server may include optional prompt_progress (when return_progress: true).
+ * SSE chunk from llama-server may include optional prompt_progress (when return_progress: true),
+ * usage (when stream_options.include_usage is true), and timings.
  */
 export type OpenAIChatCompletionChunkWithProgress = OpenAIChatCompletionChunk & {
 	prompt_progress?: PromptProgress;
+	usage?: OpenAIUsage;
+	timings?: LlamaServerTimings;
 };
+
+/**
+ * Token usage statistics returned by OpenAI-compatible APIs.
+ */
+export interface OpenAIUsage {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	prompt_tokens_details?: {
+		cached_tokens?: number;
+	};
+}
+
+/**
+ * Timing information returned by llama-server in stream and non-stream responses.
+ * Can be used as a fallback when the standard usage object is absent.
+ */
+export interface LlamaServerTimings {
+	prompt_n?: number;
+	cache_n?: number;
+	predicted_n?: number;
+	prompt_ms?: number;
+	predicted_ms?: number;
+	prompt_per_token_ms?: number;
+	prompt_per_second?: number;
+	predicted_per_token_ms?: number;
+	predicted_per_second?: number;
+}
 
 /**
  * Non-streaming response from POST /v1/chat/completions
@@ -256,11 +297,7 @@ export interface OpenAIChatCompletionResponse {
 		message: OpenAIChatMessage;
 		finish_reason: 'stop' | 'length' | 'tool_calls' | null;
 	}>;
-	usage?: {
-		prompt_tokens: number;
-		completion_tokens: number;
-		total_tokens: number;
-	};
+	usage?: OpenAIUsage;
 }
 
 /**

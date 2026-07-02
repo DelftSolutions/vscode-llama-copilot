@@ -25,6 +25,66 @@ export function isConnectionResetError(error: unknown): boolean {
 	return getErrorCode(error) === 'ECONNRESET';
 }
 
+/** Structured diagnostics extracted from a fetch/network error's cause chain. */
+export interface FetchErrorDetails {
+	code?: string;
+	syscall?: string;
+	address?: string;
+	port?: number;
+	hostname?: string;
+	causeMessage?: string;
+	formattedSummary: string;
+}
+
+/**
+ * Walk an error's cause chain and extract structured diagnostics.
+ * Useful for logging actionable context that undici hides behind "fetch failed".
+ */
+export function describeFetchError(error: unknown): FetchErrorDetails {
+	let code: string | undefined;
+	let syscall: string | undefined;
+	let address: string | undefined;
+	let port: number | undefined;
+	let hostname: string | undefined;
+	let causeMessage: string | undefined;
+
+	for (
+		let current: unknown = error;
+		current && typeof current === 'object';
+		current = (current as { cause?: unknown }).cause
+	) {
+		const obj = current as Record<string, unknown>;
+		if (!code && typeof obj.code === 'string') code = obj.code;
+		if (!syscall && typeof obj.syscall === 'string') syscall = obj.syscall;
+		if (!address && typeof obj.address === 'string') address = obj.address;
+		if (port === undefined && typeof obj.port === 'number') port = obj.port;
+		if (!hostname && typeof obj.hostname === 'string') hostname = obj.hostname;
+		if (!causeMessage && current !== error && obj.message && typeof obj.message === 'string') {
+			causeMessage = obj.message;
+		}
+	}
+
+	const parts: string[] = [];
+	if (code) parts.push(`code=${code}`);
+	if (syscall) parts.push(`syscall=${syscall}`);
+	if (hostname) parts.push(`hostname=${hostname}`);
+	if (address) parts.push(`address=${address}`);
+	if (port !== undefined) parts.push(`port=${port}`);
+
+	let formattedSummary: string;
+	if (parts.length > 0 && causeMessage) {
+		formattedSummary = `${parts.join(' ')} | ${causeMessage}`;
+	} else if (parts.length > 0) {
+		formattedSummary = parts.join(' ');
+	} else if (causeMessage) {
+		formattedSummary = causeMessage;
+	} else {
+		formattedSummary = '';
+	}
+
+	return { code, syscall, address, port, hostname, causeMessage, formattedSummary };
+}
+
 /**
  * Normalize fetch/network errors into a user-friendly message.
  * Returns undefined if the error is not a network/fetch error (caller should rethrow original).
@@ -64,10 +124,13 @@ export function normalizeFetchError(error: unknown, requestUrl?: string): string
 			return `Host could not be found. Check the server URL and network.${urlSuffix}`;
 		case 'ECONNRESET':
 			return `Connection was reset. The server may have closed the connection.${urlSuffix}`;
-		default:
+		default: {
+			const details = describeFetchError(error);
+			const causeSuffix = details.causeMessage ? ` (${details.causeMessage})` : '';
 			if (/fetch\s+failed/i.test(rawMessage) || /Failed\s+to\s+fetch/i.test(rawMessage)) {
-				return `Connection to the server failed. Check the URL and that llama-server is running.${urlSuffix}`;
+				return `Connection to the server failed${causeSuffix}. Check the URL and that llama-server is running.${urlSuffix}`;
 			}
 			return `Network error: ${rawMessage || 'Unknown error'}.${urlSuffix}`;
+		}
 	}
 }

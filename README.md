@@ -280,6 +280,33 @@ Override the maximum output tokens:
 }
 ```
 
+### Thinking Budget
+
+Reasoning models can consume their entire output budget on thinking, leaving nothing for the actual answer. The extension automatically sets `thinking_budget_tokens` on each chat request to prevent this. The budget is computed as a fraction of the effective `max_tokens`.
+
+The default fraction is `0.5` (half of `max_tokens` reserved for thinking). You can override it per endpoint or per model with `thinkingBudgetFraction`. Values above `1` disable the automatic budget entirely.
+
+```json
+{
+  "llamaCopilot.endpoints": {
+    "local": {
+      "url": "http://localhost:8013",
+      "thinkingBudgetFraction": 0.5,
+      "models": {
+        "qwen3-4b": {
+          "thinkingBudgetFraction": 0.3
+        },
+        "non-reasoning-model": {
+          "thinkingBudgetFraction": 2
+        }
+      }
+    }
+  }
+}
+```
+
+Model-level `thinkingBudgetFraction` overrides endpoint-level. An explicit `thinking_budget_tokens` in `requestBody` always takes precedence over the auto-computed value. Note that if llama-server was started with `--reasoning-budget` (other than `-1`), per-request budgets have no effect.
+
 ### Capabilities Configuration
 
 For models discovered from llama-server, capabilities are inferred automatically:

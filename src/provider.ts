@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { streamChatCompletion, getTokenCount, prepareCompletionRequest } from './llamaClient';
-import { EndpointsConfig } from './types';
+import { streamChatCompletion, getTokenCount, prepareCompletionRequest, normalizeStreamUsage } from './llamaClient';
+import { EndpointsConfig, OpenAIUsage } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
 import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
@@ -16,15 +16,24 @@ import {
 	parseModelId,
 	getEndpointConfig,
 	getMergedModelConfig,
+	getThinkingBudgetFraction,
 	provideLanguageModelChatInformation as provideModelInfo,
 } from './modelInfo';
-import { ThinkingTokensTracker, isNewUserMessage as isNewUserMessageCheck } from './thinkingTokens';
+import { isNewUserMessage as isNewUserMessageCheck } from './thinkingParts';
 import { queueToolResultEmailsForMessages } from './toolResultEmail';
+
+const USAGE_MIME_TYPE = 'usage';
+
+function extractTextFromRequestMessage(msg: vscode.LanguageModelChatRequestMessage): string {
+	return msg.content
+		.filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
+		.map((part) => part.value)
+		.join('');
+}
 
 export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvider {
 	private endpoints: EndpointsConfig;
 	private readonly smtpGlobalState: vscode.Memento | undefined;
-	private thinkingTokens = new ThinkingTokensTracker();
 	// Event emitter for model information changes
 	private readonly onDidChangeLanguageModelChatInformationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this.onDidChangeLanguageModelChatInformationEmitter.event;
@@ -41,16 +50,43 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	}
 
 	/**
-	 * Emit a thinking part to the chat when the host supports LanguageModelThinkingPart (proposed API).
-	 * Thinking is still accumulated for follow-up requests via the tracker; this only affects display.
+	 * Emit a thinking part to the chat via the proposed LanguageModelThinkingPart API.
+	 * VS Code stores these in chat history for round-trip via extractReasoningFromAssistantMessage.
 	 */
 	private reportThinkingPart(
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-		content: string
+		content: string,
+		metadata?: Record<string, unknown>
 	): void {
-		const ThinkingPart = (vscode as { LanguageModelThinkingPart?: new (value: string) => vscode.LanguageModelResponsePart }).LanguageModelThinkingPart;
+		const ThinkingPart = (vscode as { LanguageModelThinkingPart?: new (value: string, id?: string, metadata?: Record<string, unknown>) => vscode.LanguageModelResponsePart }).LanguageModelThinkingPart;
 		if (typeof ThinkingPart === 'function') {
-			progress.report(new ThinkingPart(content));
+			progress.report(new ThinkingPart(content, undefined, metadata));
+		}
+	}
+
+	/**
+	 * Emit a reasoning_done marker so the host knows the thinking block is complete.
+	 * Matches Copilot's languageModelAccess.ts behavior.
+	 */
+	private reportReasoningDone(
+		progress: vscode.Progress<vscode.LanguageModelResponsePart>
+	): void {
+		this.reportThinkingPart(progress, '', { vscode_reasoning_done: true });
+	}
+
+	/**
+	 * Emit a usage data part so Copilot's context window widget can display token counts.
+	 */
+	private reportUsage(
+		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+		usage: OpenAIUsage
+	): void {
+		const DataPart = vscode.LanguageModelDataPart;
+		if (typeof DataPart === 'function') {
+			progress.report(new DataPart(
+				new TextEncoder().encode(JSON.stringify(usage)),
+				USAGE_MIME_TYPE
+			));
 		}
 	}
 
@@ -93,7 +129,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	 * Create cursor rules tool if rules are available for the session
 	 */
 	private async createCursorRulesTool(
-		messages: vscode.LanguageModelChatMessage[],
+		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		modelId: string
 	): Promise<vscode.LanguageModelChatTool | null> {
 		// Wait for initialization if still in progress
@@ -182,7 +218,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	 * Provide information about available chat models
 	 */
 	async provideLanguageModelChatInformation(
-		_options: { silent: boolean },
+		_options: vscode.PrepareLanguageModelChatModelOptions,
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelChatInformation[]> {
 		return provideModelInfo(this.endpoints, getRequestTimeoutMs(), isShowAllModels());
@@ -217,11 +253,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	 * Build updated message history with assistant and user messages
 	 */
 	private buildUpdatedMessageHistory(
-		originalMessages: vscode.LanguageModelChatMessage[],
+		originalMessages: readonly vscode.LanguageModelChatRequestMessage[],
 		assistantText: string,
 		userText: string
-	): vscode.LanguageModelChatMessage[] {
-		const updatedMessages = [...originalMessages];
+	): vscode.LanguageModelChatRequestMessage[] {
+		const updatedMessages: vscode.LanguageModelChatRequestMessage[] = [...originalMessages];
 		
 		// Add assistant message asking about rules
 		updatedMessages.push(
@@ -248,7 +284,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	private async makeFollowUpRequest(
 		serverUrl: string,
 		modelId: string,
-		messages: vscode.LanguageModelChatMessage[],
+		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		modelLimits: { maxInputTokens: number; maxOutputTokens: number },
 		apiToken: string | undefined,
 		headers: Record<string, string>,
@@ -258,7 +294,8 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		token: vscode.CancellationToken,
 		requestTimeoutMs: number,
 		statusBarRef: { disposable: vscode.Disposable | undefined },
-		clearStatusBar: () => void
+		clearStatusBar: () => void,
+		thinkingBudgetFraction?: number
 	): Promise<void> {
 		const abortController = new AbortController();
 		token.onCancellationRequested(() => abortController.abort());
@@ -267,7 +304,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			serverUrl,
 			modelId,
 			messages,
-			{ getThinkingTokens: undefined, isNewUserMessage: false },
+			{ isNewUserMessage: false },
 			modelLimits,
 			apiToken,
 			headers,
@@ -279,14 +316,15 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		const completionOptions = {
 			tools: tools,
 			max_tokens: modelLimits.maxOutputTokens,
-			getThinkingTokens: undefined,
 			isNewUserMessage: false,
 			preparedRequest,
+			thinkingBudgetFraction,
 		};
 
 		// Stream follow-up response
 		try {
 			let promptProgressShown = false;
+			let lastUsage: OpenAIUsage | undefined;
 			for await (const chunk of streamChatCompletion(
 				serverUrl,
 				modelId,
@@ -329,13 +367,14 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 							promptProgressShown = true;
 						}
 					}
+				} else if (chunk.type === 'usage') {
+					lastUsage = chunk.usage;
 				} else {
 					clearStatusBar();
 					promptProgressShown = false;
 					if (chunk.type === 'text') {
 						progress.report(new vscode.LanguageModelTextPart(chunk.content));
 					} else if (chunk.type === 'toolCall') {
-						// Report tool calls normally (these should be other tools, not get-project-rule)
 						progress.report(chunk.toolCall);
 					} else if (chunk.type === 'thinking') {
 						this.reportThinkingPart(progress, chunk.content);
@@ -343,6 +382,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				}
 			}
 			clearStatusBar();
+
+			const usage = normalizeStreamUsage(lastUsage, undefined, preparedRequest.requestTokenCount);
+			if (usage) {
+				this.reportUsage(progress, usage);
+			}
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				clearStatusBar();
@@ -358,7 +402,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	 */
 	async provideLanguageModelChatResponse(
 		model: vscode.LanguageModelChatInformation,
-		messages: vscode.LanguageModelChatMessage[],
+		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		options: vscode.ProvideLanguageModelChatResponseOptions,
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		token: vscode.CancellationToken
@@ -385,19 +429,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			// Get merged headers and requestBody (model config overrides endpoint config)
 			const { headers: mergedHeaders, requestBody: mergedRequestBody } = getMergedModelConfig(this.endpoints, endpointId, baseModelId);
 
-			// Determine if we should include thinking tokens
-			// Include them when following up on tool calls with tool results
-			const includeThinkingTokens = this.thinkingTokens.shouldInclude(messages);
 			const isNewUserMsg = isNewUserMessageCheck(messages);
 
-			// Clear thinking tokens when user sends a new message (not tool results)
-			// This prevents memory leaks and ensures thinking tokens are removed as specified
-			if (isNewUserMsg) {
-				this.thinkingTokens.clear();
-			}
-
 			const maxTokens = model.maxOutputTokens;
-			
+			const thinkingBudgetFraction = getThinkingBudgetFraction(this.endpoints, endpointId, baseModelId);
+
 			// Add cursor rules tool if available
 			const cursorRulesTool = await this.createCursorRulesTool(messages, model.id);
 			const tools: readonly vscode.LanguageModelChatTool[] = cursorRulesTool
@@ -413,12 +449,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				endpointConfig.url,
 				baseModelId,
 				messages,
-				{
-					getThinkingTokens: includeThinkingTokens
-						? (msg: vscode.LanguageModelChatMessage) => this.thinkingTokens.getForMessage(msg)
-						: undefined,
-					isNewUserMessage: isNewUserMsg,
-				},
+				{ isNewUserMessage: isNewUserMsg },
 				{ maxInputTokens: model.maxInputTokens, maxOutputTokens: model.maxOutputTokens },
 				endpointConfig.apiToken,
 				mergedHeaders,
@@ -430,15 +461,15 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			const completionOptions = {
 				tools: tools,
 				max_tokens: maxTokens,
-				getThinkingTokens: includeThinkingTokens
-					? (msg: vscode.LanguageModelChatMessage) => this.thinkingTokens.getForMessage(msg)
-					: undefined,
+				toolMode: options.toolMode,
+				modelOptions: options.modelOptions,
 				isNewUserMessage: isNewUserMsg,
 				preparedRequest,
+				thinkingBudgetFraction,
 			};
 
-			// Track thinking tokens for the current response
-			let currentThinkingTokens = '';
+			// Stream-level thinking state for reasoning_done marker
+			let thinkingActive = false;
 			
 			// Track cursor rules tool calls to convert to text messages
 			const cursorRulesToolCalls: Array<{
@@ -449,6 +480,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 
 			// Stream chat completion
 			let promptProgressShown = false;
+			let lastUsage: OpenAIUsage | undefined;
 			for await (const chunk of streamChatCompletion(
 				endpointConfig.url,
 				baseModelId,
@@ -491,10 +523,16 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 							promptProgressShown = true;
 						}
 					}
+				} else if (chunk.type === 'usage') {
+					lastUsage = chunk.usage;
 				} else {
 					clearStatusBar();
 					promptProgressShown = false;
 					if (chunk.type === 'text') {
+						if (thinkingActive) {
+							this.reportReasoningDone(progress);
+							thinkingActive = false;
+						}
 						progress.report(new vscode.LanguageModelTextPart(chunk.content));
 				} else if (chunk.type === 'toolCall') {
 					logToolCall(chunk.toolCall.name, chunk.toolCall.callId, chunk.toolCall.input);
@@ -532,21 +570,32 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 						});
 					}
 					
-					// Store thinking tokens with the tool call message
-					// We'll include them when the tool results come back
-					if (currentThinkingTokens) {
-						const messageKey = `toolCall_${chunk.toolCall.callId}`;
-						this.thinkingTokens.set(messageKey, currentThinkingTokens);
-						currentThinkingTokens = '';
+					// Close thinking block before tool calls
+					if (thinkingActive) {
+						this.reportReasoningDone(progress);
+						thinkingActive = false;
 					}
 				} else if (chunk.type === 'thinking') {
 					this.reportThinkingPart(progress, chunk.content);
-					currentThinkingTokens += chunk.content;
+					thinkingActive = true;
 				}
 				}
 			}
 			
+			// Close any open thinking block at stream end
+			if (thinkingActive) {
+				this.reportReasoningDone(progress);
+				thinkingActive = false;
+			}
+
 			clearStatusBar();
+
+			// Emit usage from stream (or fall back to prepared request token count)
+			const usage = normalizeStreamUsage(lastUsage, undefined, preparedRequest.requestTokenCount);
+			if (usage) {
+				this.reportUsage(progress, usage);
+			}
+
 			// After initial stream completes, if we have cursor rules tool calls, convert them to text messages
 			if (cursorRulesToolCalls.length > 0) {
 				// Build assistant and user messages
@@ -580,17 +629,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					token,
 					requestTimeoutMs,
 					statusBarRef,
-					clearStatusBar
+					clearStatusBar,
+					thinkingBudgetFraction
 				);
 			}
 
-			// If we have remaining thinking tokens after streaming completes,
-			// store them for potential use with tool calls
-			if (currentThinkingTokens) {
-				// Store with a timestamp-based key as fallback
-				const fallbackKey = `response_${Date.now()}`;
-				this.thinkingTokens.set(fallbackKey, currentThinkingTokens);
-			}
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				clearStatusBar();
@@ -613,7 +656,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	 */
 	async provideTokenCount(
 		model: vscode.LanguageModelChatInformation,
-		text: string | vscode.LanguageModelChatMessage,
+		text: string | vscode.LanguageModelChatRequestMessage,
 		_token: vscode.CancellationToken
 	): Promise<number> {
 		try {
@@ -635,11 +678,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			if (typeof text === 'string') {
 				content = text;
 			} else {
-				// Extract text from message (content is always an array)
-				content = text.content
-					.filter((part) => part instanceof vscode.LanguageModelTextPart)
-					.map((part) => (part as vscode.LanguageModelTextPart).value)
-					.join('');
+				content = extractTextFromRequestMessage(text);
 			}
 
 			const requestTimeoutMs = getRequestTimeoutMs();
@@ -654,8 +693,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			);
 		} catch (error) {
 			console.error('Failed to count tokens:', error);
-			// Return 0 on error as fallback
-			return 0;
+			throw error;
 		}
 	}
 }

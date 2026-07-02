@@ -55,6 +55,12 @@ export function formatServerErrorMessage(
 	const msg = parsed?.message?.trim() || fallbackText || 'Unknown error';
 	const type = parsed?.type;
 
+	// Handle 429 regardless of parsed type (proxies may return 429 without llama-server JSON)
+	if (status === 429 || type === 'rate_limit_error') {
+		const detail = msg && msg !== 'Unknown error' ? `: ${msg}` : '';
+		return `Rate limit exceeded${detail}. The llama-server default is 60 requests per minute. Increase it with \`--rate-limit\` (e.g. \`--rate-limit 600\`) and restart the server.`;
+	}
+
 	switch (type) {
 		case 'authentication_error':
 			return `Invalid API key. Check the endpoint's apiToken in Settings → Llama Copilot.`;

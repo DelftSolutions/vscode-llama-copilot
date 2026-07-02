@@ -43,7 +43,7 @@ function isToolResultPart(p: unknown): p is { callId: string; content: readonly 
  * Walk assistant messages and record each tool call id → tool name (later entries override).
  */
 export function buildCallIdToToolNameMap(
-	messages: readonly vscode.LanguageModelChatMessage[]
+	messages: readonly vscode.LanguageModelChatRequestMessage[]
 ): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const msg of messages) {
@@ -103,7 +103,7 @@ export function serializeToolResultContent(content: readonly unknown[], maxChars
  * Build email rows for tool results whose names appear in the configured watchlist.
  */
 export function collectToolResultEmailItems(
-	messages: readonly vscode.LanguageModelChatMessage[],
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
 	settings: Pick<SmtpToolEmailSettings, 'toolNames' | 'maxBodyChars'>
 ): ToolResultEmailItem[] {
 	const map = buildCallIdToToolNameMap(messages);
@@ -145,7 +145,7 @@ async function persistDedupe(memento: vscode.Memento, set: Set<string>): Promise
 }
 
 async function processToolResultEmails(
-	messages: readonly vscode.LanguageModelChatMessage[],
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
 	globalState: vscode.Memento
 ): Promise<void> {
 	const settings = getSmtpToolEmailSettings();
@@ -195,7 +195,7 @@ async function processToolResultEmails(
  * Queue asynchronous SMTP notifications for matching tool results (non-blocking for the language model).
  */
 export function queueToolResultEmailsForMessages(
-	messages: readonly vscode.LanguageModelChatMessage[],
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
 	globalState: vscode.Memento | undefined
 ): void {
 	if (!globalState) {

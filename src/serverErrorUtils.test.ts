@@ -187,4 +187,33 @@ describe('formatServerErrorMessage', () => {
 		const msg = formatServerErrorMessage(parsed, 418, '');
 		expect(msg).toContain('Request error: custom error');
 	});
+
+	it('formats rate_limit_error with message', () => {
+		const parsed: ParsedServerError = {
+			message: 'Rate limit exceeded. Please slow down.',
+			type: 'rate_limit_error',
+			code: 429,
+		};
+		const msg = formatServerErrorMessage(parsed, 429, '');
+		expect(msg).toContain('Rate limit exceeded');
+		expect(msg).toContain('--rate-limit');
+		expect(msg).toContain('600');
+	});
+
+	it('formats bare 429 with no parsed body', () => {
+		const msg = formatServerErrorMessage(null, 429, 'Too Many Requests');
+		expect(msg).toContain('Rate limit exceeded');
+		expect(msg).toContain('--rate-limit');
+	});
+
+	it('formats 429 with server message appended', () => {
+		const parsed: ParsedServerError = {
+			message: 'custom rate limit detail',
+			type: 'rate_limit_error',
+			code: 429,
+		};
+		const msg = formatServerErrorMessage(parsed, 429, '');
+		expect(msg).toContain('custom rate limit detail');
+		expect(msg).toContain('--rate-limit');
+	});
 });

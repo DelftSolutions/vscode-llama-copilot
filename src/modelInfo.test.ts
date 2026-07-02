@@ -8,8 +8,11 @@ import {
 	isSingleModelServer,
 	calculateMaxOutputTokens,
 	parseModelId,
+	getThinkingBudgetFraction,
+	computeThinkingBudgetTokens,
+	DEFAULT_THINKING_BUDGET_FRACTION,
 } from './modelInfo';
-import type { Model } from './types';
+import type { Model, EndpointsConfig } from './types';
 
 /** Helper: multi-model (router) model with status */
 function routerModel(overrides: Partial<Model> = {}): Model {
@@ -191,5 +194,95 @@ describe('parseModelId', () => {
 			baseModelId: 'Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf',
 			endpointId: 'remote',
 		});
+	});
+});
+
+describe('computeThinkingBudgetTokens', () => {
+	it('computes 50% of max_tokens', () => {
+		expect(computeThinkingBudgetTokens(8192, 0.5)).toBe(4096);
+	});
+
+	it('computes 100% of max_tokens when fraction is 1', () => {
+		expect(computeThinkingBudgetTokens(8192, 1.0)).toBe(8192);
+	});
+
+	it('returns undefined when fraction > 1', () => {
+		expect(computeThinkingBudgetTokens(8192, 1.5)).toBeUndefined();
+	});
+
+	it('returns undefined when maxTokens is 0', () => {
+		expect(computeThinkingBudgetTokens(0, 0.5)).toBeUndefined();
+	});
+
+	it('returns undefined when maxTokens is negative', () => {
+		expect(computeThinkingBudgetTokens(-100, 0.5)).toBeUndefined();
+	});
+
+	it('floors the result', () => {
+		expect(computeThinkingBudgetTokens(8193, 0.5)).toBe(4096);
+	});
+
+	it('returns 0 when fraction is 0', () => {
+		expect(computeThinkingBudgetTokens(8192, 0)).toBe(0);
+	});
+});
+
+describe('getThinkingBudgetFraction', () => {
+	const baseEndpoints: EndpointsConfig = {
+		local: { url: 'http://localhost:8013' },
+	};
+
+	it('returns default when nothing is configured', () => {
+		expect(getThinkingBudgetFraction(baseEndpoints, 'local', 'qwen3-4b')).toBe(DEFAULT_THINKING_BUDGET_FRACTION);
+	});
+
+	it('uses endpoint-level override', () => {
+		const endpoints: EndpointsConfig = {
+			local: { url: 'http://localhost:8013', thinkingBudgetFraction: 0.7 },
+		};
+		expect(getThinkingBudgetFraction(endpoints, 'local', 'qwen3-4b')).toBe(0.7);
+	});
+
+	it('uses model-level override', () => {
+		const endpoints: EndpointsConfig = {
+			local: {
+				url: 'http://localhost:8013',
+				models: { 'qwen3-4b': { thinkingBudgetFraction: 0.3 } },
+			},
+		};
+		expect(getThinkingBudgetFraction(endpoints, 'local', 'qwen3-4b')).toBe(0.3);
+	});
+
+	it('model-level overrides endpoint-level', () => {
+		const endpoints: EndpointsConfig = {
+			local: {
+				url: 'http://localhost:8013',
+				thinkingBudgetFraction: 0.7,
+				models: { 'qwen3-4b': { thinkingBudgetFraction: 0.2 } },
+			},
+		};
+		expect(getThinkingBudgetFraction(endpoints, 'local', 'qwen3-4b')).toBe(0.2);
+	});
+
+	it('falls back to endpoint when model has no override', () => {
+		const endpoints: EndpointsConfig = {
+			local: {
+				url: 'http://localhost:8013',
+				thinkingBudgetFraction: 0.8,
+				models: { 'other-model': { thinkingBudgetFraction: 0.1 } },
+			},
+		};
+		expect(getThinkingBudgetFraction(endpoints, 'local', 'qwen3-4b')).toBe(0.8);
+	});
+
+	it('supports fraction > 1 to disable budget', () => {
+		const endpoints: EndpointsConfig = {
+			local: {
+				url: 'http://localhost:8013',
+				models: { 'qwen3-4b': { thinkingBudgetFraction: 2 } },
+			},
+		};
+		expect(getThinkingBudgetFraction(endpoints, 'local', 'qwen3-4b')).toBe(2);
+		expect(computeThinkingBudgetTokens(8192, 2)).toBeUndefined();
 	});
 });

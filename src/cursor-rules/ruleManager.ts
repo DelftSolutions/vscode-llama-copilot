@@ -72,7 +72,7 @@ export class RuleManager {
 	/**
 	 * Get or create session ID from messages and model
 	 */
-	private getSessionId(messages: vscode.LanguageModelChatMessage[], modelId: string): string {
+	private getSessionId(messages: readonly vscode.LanguageModelChatRequestMessage[], modelId: string): string {
 		// Find first user message
 		const firstUserMessage = messages.find(msg => 
 			msg.role === vscode.LanguageModelChatMessageRole.User
@@ -105,7 +105,7 @@ export class RuleManager {
 	/**
 	 * Check if this is a new conversation (new user message without tool results)
 	 */
-	private isNewConversation(messages: vscode.LanguageModelChatMessage[]): boolean {
+	private isNewConversation(messages: readonly vscode.LanguageModelChatRequestMessage[]): boolean {
 		if (messages.length === 0) {
 			return true;
 		}
@@ -127,7 +127,7 @@ export class RuleManager {
 	 * Match rules against conversation content and update available rules for session
 	 */
 	matchRulesForSession(
-		messages: vscode.LanguageModelChatMessage[],
+		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		modelId: string
 	): Set<string> {
 		const sessionId = this.getSessionId(messages, modelId);
@@ -198,7 +198,7 @@ export class RuleManager {
 	/**
 	 * Get available rules for a session
 	 */
-	getAvailableRules(messages: vscode.LanguageModelChatMessage[], modelId: string): ParsedRule[] {
+	getAvailableRules(messages: readonly vscode.LanguageModelChatRequestMessage[], modelId: string): ParsedRule[] {
 		const sessionId = this.getSessionId(messages, modelId);
 		const availableRulePaths = this.sessionRules.get(sessionId) || new Set<string>();
 		
