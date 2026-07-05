@@ -22,7 +22,6 @@ import {
 	OpenAIChatCompletionChunk,
 	OpenAIChatCompletionChunkWithProgress,
 	OpenAIUsage,
-	LlamaServerTimings,
 	StreamToolCallDeltaAccumulator,
 	InfillRequest,
 	InfillResponse,
@@ -511,47 +510,6 @@ function flushAccumulatedToolCalls(
 }
 
 /**
- * Normalize usage from the best available source: the standard OpenAI usage object,
- * llama-server timings, or a fallback prompt token count from prepareCompletionRequest.
- * Returns undefined only when no usable data exists.
- */
-export function normalizeStreamUsage(
-	usage: OpenAIUsage | undefined,
-	timings: LlamaServerTimings | undefined,
-	fallbackPromptTokens?: number
-): OpenAIUsage | undefined {
-	if (usage) {
-		const prompt = Math.max(0, usage.prompt_tokens);
-		const completion = Math.max(0, usage.completion_tokens);
-		return {
-			prompt_tokens: prompt,
-			completion_tokens: completion,
-			total_tokens: Math.max(0, usage.total_tokens) || (prompt + completion),
-			...(usage.prompt_tokens_details ? { prompt_tokens_details: usage.prompt_tokens_details } : {}),
-		};
-	}
-	if (timings) {
-		const prompt = Math.max(0, (timings.prompt_n ?? 0) + (timings.cache_n ?? 0));
-		const completion = Math.max(0, timings.predicted_n ?? 0);
-		if (prompt > 0 || completion > 0) {
-			return {
-				prompt_tokens: prompt,
-				completion_tokens: completion,
-				total_tokens: prompt + completion,
-			};
-		}
-	}
-	if (fallbackPromptTokens !== undefined && fallbackPromptTokens > 0) {
-		return {
-			prompt_tokens: fallbackPromptTokens,
-			completion_tokens: 0,
-			total_tokens: fallbackPromptTokens,
-		};
-	}
-	return undefined;
-}
-
-/**
  * Stream chat completion from OpenAI-compatible /v1/chat/completions endpoint
  * Returns an async generator that yields response parts (text, tool calls, thinking tokens)
  */
@@ -747,14 +705,8 @@ export async function* streamChatCompletion(
 
 							// Yield usage from the final stream chunk (sent when stream_options.include_usage is true).
 							// llama-server sends this on a chunk with empty choices, so it must be checked before the guard below.
-							// Also handle timings as a fallback source for usage.
 							if (chunk.usage) {
 								yield { type: 'usage', usage: chunk.usage };
-							} else if (chunk.timings && (!chunk.choices || chunk.choices.length === 0)) {
-								const usage = normalizeStreamUsage(undefined, chunk.timings);
-								if (usage) {
-									yield { type: 'usage', usage };
-								}
 							}
 
 							if (!chunk.choices || chunk.choices.length === 0) {

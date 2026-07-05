@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { streamChatCompletion, getTokenCount, prepareCompletionRequest, normalizeStreamUsage } from './llamaClient';
+import { streamChatCompletion, getTokenCount, prepareCompletionRequest } from './llamaClient';
 import { EndpointsConfig, OpenAIUsage } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
@@ -335,7 +335,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		// Stream follow-up response
 		try {
 			let promptProgressShown = false;
-			let lastUsage: OpenAIUsage | undefined;
 			let currentThinkingTokens = '';
 			for await (const chunk of streamChatCompletion(
 				serverUrl,
@@ -380,7 +379,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 						}
 					}
 				} else if (chunk.type === 'usage') {
-					lastUsage = chunk.usage;
+					this.reportUsage(progress, chunk.usage);
 				} else {
 					clearStatusBar();
 					promptProgressShown = false;
@@ -402,11 +401,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				this.thinkingTokensTracker.set(`response_${Date.now()}`, currentThinkingTokens);
 			}
 			clearStatusBar();
-
-			const usage = normalizeStreamUsage(lastUsage, undefined, preparedRequest.requestTokenCount);
-			if (usage) {
-				this.reportUsage(progress, usage);
-			}
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				clearStatusBar();
@@ -511,7 +505,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 
 			// Stream chat completion
 			let promptProgressShown = false;
-			let lastUsage: OpenAIUsage | undefined;
 			for await (const chunk of streamChatCompletion(
 				endpointConfig.url,
 				baseModelId,
@@ -555,7 +548,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 						}
 					}
 				} else if (chunk.type === 'usage') {
-					lastUsage = chunk.usage;
+					this.reportUsage(progress, chunk.usage);
 				} else {
 					clearStatusBar();
 					promptProgressShown = false;
@@ -631,12 +624,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			}
 
 			clearStatusBar();
-
-			// Emit usage from stream (or fall back to prepared request token count)
-			const usage = normalizeStreamUsage(lastUsage, undefined, preparedRequest.requestTokenCount);
-			if (usage) {
-				this.reportUsage(progress, usage);
-			}
 
 			// After initial stream completes, if we have cursor rules tool calls, convert them to text messages
 			if (cursorRulesToolCalls.length > 0) {
