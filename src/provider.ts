@@ -19,17 +19,44 @@ import {
 	getThinkingBudgetFraction,
 	provideLanguageModelChatInformation as provideModelInfo,
 } from './modelInfo';
-import { isNewUserMessage as isNewUserMessageCheck, getReasoningSource } from './thinkingParts';
+import {
+	isNewUserMessage as isNewUserMessageCheck,
+	getReasoningSource,
+	extractReasoningFromAssistantMessage,
+} from './thinkingParts';
 import { ThinkingTokensTracker } from './thinkingTokens';
 import { queueToolResultEmailsForMessages } from './toolResultEmail';
 
 const USAGE_MIME_TYPE = 'usage';
 
-function extractTextFromRequestMessage(msg: vscode.LanguageModelChatRequestMessage): string {
-	return msg.content
-		.filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
-		.map((part) => part.value)
-		.join('');
+/**
+ * Serialize a request message to a string for /tokenize.
+ * Includes text, tool call name+args, tool result text, and reasoning/thinking.
+ */
+export function extractTextFromRequestMessage(msg: vscode.LanguageModelChatRequestMessage): string {
+	const chunks: string[] = [];
+
+	for (const part of msg.content) {
+		if (part instanceof vscode.LanguageModelTextPart) {
+			chunks.push(part.value);
+		} else if (part instanceof vscode.LanguageModelToolCallPart) {
+			chunks.push(part.name);
+			chunks.push(JSON.stringify(part.input ?? {}));
+		} else if (part instanceof vscode.LanguageModelToolResultPart) {
+			for (const c of part.content) {
+				if (c instanceof vscode.LanguageModelTextPart) {
+					chunks.push(c.value);
+				}
+			}
+		}
+	}
+
+	const reasoning = extractReasoningFromAssistantMessage(msg);
+	if (reasoning) {
+		chunks.push(reasoning);
+	}
+
+	return chunks.join('');
 }
 
 export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvider {

@@ -321,6 +321,23 @@ export function mapToolModeToToolChoice(
 }
 
 /**
+ * Resolve reasoning_content for an assistant message based on reasoningSource.
+ */
+function resolveAssistantReasoning(
+	msg: LanguageModelChatRequestMessage,
+	reasoningSource: ReasoningSource,
+	getThinkingTokens?: (msg: LanguageModelChatRequestMessage) => string | undefined
+): string | undefined {
+	if (reasoningSource === 'roundtrip') {
+		return extractReasoningFromAssistantMessage(msg);
+	}
+	if (reasoningSource === 'tracker' && getThinkingTokens) {
+		return getThinkingTokens(msg);
+	}
+	return undefined;
+}
+
+/**
  * Convert VS Code messages to OpenAI format.
  * Extracts reasoning from LanguageModelThinkingPart in assistant messages (round-trip),
  * or from the ThinkingTokensTracker fallback when reasoningSource is 'tracker'.
@@ -382,16 +399,9 @@ export function convertVSCodeMessagesToOpenAI(
 				tool_calls: toolCalls,
 			};
 
-			if (reasoningSource === 'roundtrip') {
-				const reasoning = extractReasoningFromAssistantMessage(msg);
-				if (reasoning) {
-					assistantMsg.reasoning_content = reasoning;
-				}
-			} else if (reasoningSource === 'tracker' && options?.getThinkingTokens) {
-				const reasoning = options.getThinkingTokens(msg);
-				if (reasoning) {
-					assistantMsg.reasoning_content = reasoning;
-				}
+			const reasoning = resolveAssistantReasoning(msg, reasoningSource, options?.getThinkingTokens);
+			if (reasoning) {
+				assistantMsg.reasoning_content = reasoning;
 			}
 
 			openAIMessages.push(assistantMsg);
@@ -418,12 +428,19 @@ export function convertVSCodeMessagesToOpenAI(
 				});
 			}
 		}
-		// Handle regular messages
+		// Handle regular messages (including assistant without tool calls)
 		else {
-			openAIMessages.push({
+			const openAIMsg: OpenAIChatMessage = {
 				role,
 				content: textParts || null,
-			});
+			};
+			if (role === 'assistant') {
+				const reasoning = resolveAssistantReasoning(msg, reasoningSource, options?.getThinkingTokens);
+				if (reasoning) {
+					openAIMsg.reasoning_content = reasoning;
+				}
+			}
+			openAIMessages.push(openAIMsg);
 		}
 	}
 

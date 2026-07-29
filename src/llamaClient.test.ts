@@ -58,6 +58,36 @@ describe('convertVSCodeMessagesToOpenAI', () => {
 		expect(result[0].reasoning_content).toBe('my reasoning');
 	});
 
+	it('extracts reasoning_content from ThinkingPart without tool calls', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('my reasoning'),
+				new LanguageModelTextPart('final answer'),
+			]),
+		];
+		const result = convertVSCodeMessagesToOpenAI(messages, { isNewUserMessage: false });
+		expect(result[0]).toEqual({
+			role: 'assistant',
+			content: 'final answer',
+			reasoning_content: 'my reasoning',
+		});
+	});
+
+	it('omits reasoning_content without tool calls when reasoningSource is none', () => {
+		const messages = [
+			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
+				new LanguageModelThinkingPart('my reasoning'),
+				new LanguageModelTextPart('final answer'),
+			]),
+		];
+		const result = convertVSCodeMessagesToOpenAI(messages, { reasoningSource: 'none' });
+		expect(result[0]).toEqual({
+			role: 'assistant',
+			content: 'final answer',
+		});
+		expect(result[0].reasoning_content).toBeUndefined();
+	});
+
 	it('skips reasoning_content when isNewUserMessage is true', () => {
 		const messages = [
 			new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, [
