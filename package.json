@@ -154,6 +154,11 @@
 					"default": true,
 					"description": "Enable cursor rules tool for LLM access to project rules from .cursor/rules/"
 				},
+				"llamaCopilot.enableToolLoopDetection": {
+					"type": "boolean",
+					"default": true,
+					"description": "Detect and break tool-call loops by pruning duplicate rounds and injecting a refusal. Disable if loop detection interferes with your workflow."
+				},
 				"llamaCopilot.inlineCompletionModel": {
 					"type": "string",
 					"default": "",

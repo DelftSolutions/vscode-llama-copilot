@@ -132,6 +132,13 @@ export function isInlineCompletionContextEnabled(): boolean {
 }
 
 /**
+ * Check if tool loop detection feature is enabled.
+ */
+export function isToolLoopDetectionEnabled(): boolean {
+	return getConfig().get<boolean>('enableToolLoopDetection', true);
+}
+
+/**
  * Inline completion /infill prompt (trimmed). Empty string means omit the prompt field from the request.
  */
 export function getInlineCompletionPrompt(): string {

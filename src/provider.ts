@@ -3,14 +3,16 @@ import { streamChatCompletion, getTokenCount, prepareCompletionRequest } from '.
 import { EndpointsConfig, OpenAIUsage } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
-import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
+import { logRulesMatching, logToolCall, logToolCallResult, logLoopDetection } from './logger';
 import {
 	getRequestTimeoutMs,
 	getPromptProgressStatusBarThresholdSeconds,
 	getMinPromptProgressElapsedMs,
 	isCursorRulesEnabled as isCursorRulesEnabledConfig,
 	isShowAllModels,
+	isToolLoopDetectionEnabled,
 } from './config';
+import { processLoopDetection } from './toolLoopDetector';
 import { estimatePromptProgress, formatRemaining } from './promptProgressEstimate';
 import {
 	parseModelId,
@@ -348,11 +350,30 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			abortController.signal
 		);
 
+		// --- Loop detection for follow-up path ---
+		let followUpTools = tools;
+		let followUpMessages = preparedRequest.openAIMessages;
+		if (isToolLoopDetectionEnabled()) {
+			const loopResult = processLoopDetection(preparedRequest.openAIMessages);
+			followUpMessages = loopResult.messages;
+			if (loopResult.lastDetection) {
+				if (loopResult.lastDetection.toolsToFilter.length > 0) {
+					followUpTools = tools.filter(
+						t => !loopResult.lastDetection!.toolsToFilter.includes(t.name)
+					);
+				}
+				logLoopDetection(loopResult.lastDetection);
+			}
+		}
+
 		const completionOptions = {
-			tools: tools,
+			tools: followUpTools,
 			max_tokens: modelLimits.maxOutputTokens,
 			isNewUserMessage: false,
-			preparedRequest,
+			preparedRequest: {
+				...preparedRequest,
+				openAIMessages: followUpMessages,
+			},
 			thinkingBudgetFraction,
 		};
 
@@ -503,13 +524,32 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				abortController.signal
 			);
 
+			// --- Loop detection (runs on every request when enabled) ---
+			let effectiveTools: readonly vscode.LanguageModelChatTool[] = tools;
+			let prunedMessages = preparedRequest.openAIMessages;
+			if (isToolLoopDetectionEnabled()) {
+				const loopResult = processLoopDetection(preparedRequest.openAIMessages);
+				prunedMessages = loopResult.messages;
+				if (loopResult.lastDetection) {
+					if (loopResult.lastDetection.toolsToFilter.length > 0) {
+						effectiveTools = tools.filter(
+							t => !loopResult.lastDetection!.toolsToFilter.includes(t.name)
+						);
+					}
+					logLoopDetection(loopResult.lastDetection);
+				}
+			}
+
 			const completionOptions = {
-				tools: tools,
+				tools: effectiveTools,
 				max_tokens: maxTokens,
 				toolMode: options.toolMode,
 				modelOptions: options.modelOptions,
 				isNewUserMessage: isNewUserMsg,
-				preparedRequest,
+				preparedRequest: {
+					...preparedRequest,
+					openAIMessages: prunedMessages,
+				},
 				thinkingBudgetFraction,
 			};
 

@@ -273,3 +273,25 @@ export function logToolCallResult(
 	}
 }
 
+/**
+ * Log a detected tool-call loop.
+ */
+export function logLoopDetection(
+	detection: {
+		trigger: string;
+		cycleMembers: Array<{ toolName: string; windowCount: number; totalCount: number }>;
+		toolsToFilter: string[];
+	}
+): void {
+	const memberSummary = detection.cycleMembers
+		.map(m => `${m.toolName} (window: ${m.windowCount}, total: ${m.totalCount})`)
+		.join(', ');
+	logDebug(
+		DEBUG_TOOL_CALLS,
+		`Loop detected: trigger=${detection.trigger}, members=[${memberSummary}]` +
+			(detection.toolsToFilter.length > 0
+				? `, filtering tools: [${detection.toolsToFilter.join(', ')}]`
+				: '')
+	);
+}
+
