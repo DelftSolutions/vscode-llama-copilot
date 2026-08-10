@@ -3,9 +3,6 @@ import * as vscode from 'vscode';
 /** Configuration section for the extension (must match package.json contributes.configuration) */
 export const CONFIG_SECTION = 'llamaCopilot';
 
-/** Memento key for tool call IDs already emailed */
-export const MEMENTO_SMTP_EMAILED_CALL_IDS = 'llamaCopilot.smtpEmailedCallIds';
-
 /** Key for endpoints configuration object */
 export const CONFIG_ENDPOINTS = 'endpoints';
 
@@ -142,44 +139,3 @@ export function getInlineCompletionPrompt(): string {
 	return (v ?? '').trim();
 }
 
-/** Resolved SMTP settings from workspace configuration (unauthenticated SMTP). */
-export interface SmtpToolEmailSettings {
-	readonly enabled: boolean;
-	readonly host: string;
-	readonly port: number;
-	readonly secure: boolean;
-	readonly from: string;
-	readonly toRaw: string;
-	readonly tlsRejectUnauthorized: boolean;
-	readonly toolNames: readonly string[];
-	readonly subjectPrefix: string;
-	readonly maxBodyChars: number;
-}
-
-/**
- * Read SMTP-related settings.
- */
-export function getSmtpToolEmailSettings(): SmtpToolEmailSettings {
-	const c = getConfig();
-	const toolNames = c.get<string[]>('smtp.toolNames', ['invoke_agent']);
-	return {
-		enabled: c.get<boolean>('smtp.enabled', false),
-		host: (c.get<string>('smtp.host', '') ?? '').trim(),
-		port: c.get<number>('smtp.port', 587),
-		secure: c.get<boolean>('smtp.secure', false),
-		from: (c.get<string>('smtp.from', '') ?? '').trim(),
-		toRaw: (c.get<string>('smtp.to', '') ?? '').trim(),
-		tlsRejectUnauthorized: c.get<boolean>('smtp.tls.rejectUnauthorized', true),
-		toolNames: Array.isArray(toolNames) ? [...toolNames] : ['invoke_agent'],
-		subjectPrefix: c.get<string>('smtp.subjectPrefix', '[llama-copilot tool]') ?? '[llama-copilot tool]',
-		maxBodyChars: c.get<number>('smtp.maxBodyChars', 500_000),
-	};
-}
-
-/** Split comma-separated SMTP recipient list (trimmed, non-empty segments). */
-export function parseSmtpRecipients(toRaw: string): string[] {
-	return toRaw
-		.split(',')
-		.map((s) => s.trim())
-		.filter(Boolean);
-}

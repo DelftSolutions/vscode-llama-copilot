@@ -25,7 +25,6 @@ import {
 	extractReasoningFromAssistantMessage,
 } from './thinkingParts';
 import { ThinkingTokensTracker } from './thinkingTokens';
-import { queueToolResultEmailsForMessages } from './toolResultEmail';
 
 const USAGE_MIME_TYPE = 'usage';
 
@@ -61,7 +60,6 @@ export function extractTextFromRequestMessage(msg: vscode.LanguageModelChatReque
 
 export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvider {
 	private endpoints: EndpointsConfig;
-	private readonly smtpGlobalState: vscode.Memento | undefined;
 	// Event emitter for model information changes
 	private readonly onDidChangeLanguageModelChatInformationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this.onDidChangeLanguageModelChatInformationEmitter.event;
@@ -73,9 +71,8 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	// Fallback reasoning tracker — delete when VS Code round-trips LanguageModelThinkingPart reliably
 	private readonly thinkingTokensTracker = new ThinkingTokensTracker();
 
-	constructor(endpoints: EndpointsConfig, smtpGlobalState?: vscode.Memento) {
+	constructor(endpoints: EndpointsConfig) {
 		this.endpoints = endpoints;
-		this.smtpGlobalState = smtpGlobalState;
 		this.rulesLoadingPromise = this.initializeRules();
 	}
 
@@ -454,8 +451,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			statusBarRef.disposable = undefined;
 		};
 		try {
-			queueToolResultEmailsForMessages(messages, this.smtpGlobalState);
-
 			// Parse model ID to extract endpoint identifier
 			const { baseModelId, endpointId } = parseModelId(model.id);
 			if (!endpointId) {

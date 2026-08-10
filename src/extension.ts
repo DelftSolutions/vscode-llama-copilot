@@ -9,7 +9,6 @@ import {
 	endpointsSettingsKey,
 	getInlineCompletionModel,
 } from './config';
-import { sendTestSmtpEmail } from './smtpMail';
 import { InlineCompletionProvider } from './inlineCompletion/provider';
 
 let provider: LlamaCopilotChatProvider | undefined;
@@ -71,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		// Create and register new provider
-		provider = new LlamaCopilotChatProvider(endpoints, context.globalState);
+		provider = new LlamaCopilotChatProvider(endpoints);
 		providerDisposable = vscode.lm.registerLanguageModelChatProvider(
 			'llama-server',
 			provider
@@ -107,12 +106,6 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.executeCommand('workbench.action.openSettings', endpointsSettingsKey());
 	});
 	context.subscriptions.push(commandDisposable);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('llamaCopilot.sendTestSmtpEmail', async () => {
-			await sendTestSmtpEmail();
-		})
-	);
 
 	// Get endpoints from configuration and register initial provider
 	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
