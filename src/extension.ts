@@ -8,23 +8,36 @@ import {
 	endpointsConfigKey,
 	endpointsSettingsKey,
 	getInlineCompletionModel,
+	isServerManaged,
+	getServerPort,
+	getStopOnDeactivate,
+	isAutoUpdateEnabled,
+	getServerExtraArgs,
 } from './config';
 import { InlineCompletionProvider } from './inlineCompletion/provider';
+import { isSupportedPlatform } from './server/platform';
+import { BinaryManager } from './server/binaryManager';
+import { LlamaServerManager } from './server/serverManager';
+import { ModelsIniManager, UnsupportedIniVersionError } from './server/modelsIniManager';
+import { queryDevices, invalidateDeviceCache } from './server/deviceQuery';
+import { checkForUpdate } from './server/autoUpdate';
+import { openModelsManager } from './server/modelsIniUI';
 
 let provider: LlamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
 let inlineCompletionDisposable: vscode.Disposable | undefined;
+let serverManager: LlamaServerManager | undefined;
+let binaryManager: BinaryManager | undefined;
+let modelsIniManager: ModelsIniManager | undefined;
 
 /**
  * Normalize endpoint URL by stripping trailing `/` or `/v1`
  */
 function normalizeEndpointUrl(url: string): string {
 	let normalized = url.trim();
-	// Strip trailing `/v1`
 	if (normalized.endsWith('/v1')) {
 		normalized = normalized.slice(0, -3);
 	}
-	// Strip trailing `/`
 	if (normalized.endsWith('/')) {
 		normalized = normalized.slice(0, -1);
 	}
@@ -45,106 +58,340 @@ function normalizeEndpoints(endpoints: EndpointsConfig): EndpointsConfig {
 	return normalized;
 }
 
+/**
+ * Build the effective endpoints map: user settings + managed endpoint (if running).
+ */
+function buildEffectiveEndpoints(): EndpointsConfig {
+	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+	const userEndpoints = config.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
+	const normalized = normalizeEndpoints(userEndpoints);
+
+	if (serverManager && serverManager.getState() === 'running') {
+		const port = getServerPort();
+		if ('managed' in normalized) {
+			// User has a "managed" key -- override with warning (logged once)
+		}
+		normalized['managed'] = { url: `http://127.0.0.1:${port}` };
+	}
+
+	return normalized;
+}
+
+// Serialized refresh to avoid races between config changes and state changes
+let refreshPending = false;
+let refreshRunning = false;
+
+function refreshProviders(context: vscode.ExtensionContext) {
+	if (refreshRunning) { refreshPending = true; return; }
+	refreshRunning = true;
+	do {
+		refreshPending = false;
+		const endpoints = buildEffectiveEndpoints();
+		const newProvider = registerProvider(endpoints, context);
+		updateInlineCompletionProvider(endpoints, context);
+		if (newProvider) {
+			setTimeout(() => newProvider.fireChangeEvent(), 0);
+		}
+	} while (refreshPending);
+	refreshRunning = false;
+}
+
+function registerProvider(endpoints: EndpointsConfig, context: vscode.ExtensionContext) {
+	if (provider) {
+		provider.dispose();
+		provider = undefined;
+	}
+	if (providerDisposable) {
+		const index = context.subscriptions.indexOf(providerDisposable);
+		if (index !== -1) {
+			context.subscriptions.splice(index, 1);
+		}
+		providerDisposable.dispose();
+		providerDisposable = undefined;
+	}
+
+	provider = new LlamaCopilotChatProvider(endpoints);
+	providerDisposable = vscode.lm.registerLanguageModelChatProvider(
+		'llama-server',
+		provider
+	);
+
+	context.subscriptions.push(providerDisposable);
+	return provider;
+}
+
+function updateInlineCompletionProvider(endpoints: EndpointsConfig, context: vscode.ExtensionContext) {
+	if (inlineCompletionDisposable) {
+		const index = context.subscriptions.indexOf(inlineCompletionDisposable);
+		if (index !== -1) context.subscriptions.splice(index, 1);
+		inlineCompletionDisposable.dispose();
+		inlineCompletionDisposable = undefined;
+	}
+	const modelId = getInlineCompletionModel();
+	if (modelId && Object.keys(endpoints).length > 0) {
+		const selector = [{ language: '*' }];
+		inlineCompletionDisposable = vscode.languages.registerInlineCompletionItemProvider(
+			selector,
+			new InlineCompletionProvider(endpoints)
+		);
+		context.subscriptions.push(inlineCompletionDisposable);
+	}
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	// Create output channel for API logging
 	const outputChannel = vscode.window.createOutputChannel('LLaMA Server API');
 	context.subscriptions.push(outputChannel);
-	
+
 	// Initialize logger with output channel
 	initializeLogger(outputChannel);
 
-	// Helper function to register the provider
-	const registerProvider = (endpoints: EndpointsConfig) => {
-		// Dispose and remove existing provider if any
-		if (provider) {
-			provider.dispose();
-			provider = undefined;
-		}
-		if (providerDisposable) {
-			const index = context.subscriptions.indexOf(providerDisposable);
-			if (index !== -1) {
-				context.subscriptions.splice(index, 1);
-			}
-			providerDisposable.dispose();
-			providerDisposable = undefined;
-		}
-
-		// Create and register new provider
-		provider = new LlamaCopilotChatProvider(endpoints);
-		providerDisposable = vscode.lm.registerLanguageModelChatProvider(
-			'llama-server',
-			provider
-		);
-
-		context.subscriptions.push(providerDisposable);
-		
-		// Return the provider so we can fire events on it
-		return provider;
-	};
-
-	/** Register inline completion provider when a model is configured; unregister otherwise. */
-	const updateInlineCompletionProvider = (endpoints: EndpointsConfig) => {
-		if (inlineCompletionDisposable) {
-			const index = context.subscriptions.indexOf(inlineCompletionDisposable);
-			if (index !== -1) context.subscriptions.splice(index, 1);
-			inlineCompletionDisposable.dispose();
-			inlineCompletionDisposable = undefined;
-		}
-		const modelId = getInlineCompletionModel();
-		if (modelId && Object.keys(endpoints).length > 0) {
-			const selector = [{ language: '*' }];
-			inlineCompletionDisposable = vscode.languages.registerInlineCompletionItemProvider(
-				selector,
-				new InlineCompletionProvider(endpoints)
-			);
-			context.subscriptions.push(inlineCompletionDisposable);
-		}
-	};
-
 	// Register command to open endpoint settings
-	const commandDisposable = vscode.commands.registerCommand('llamaCopilot.openEndpointSettings', () => {
-		vscode.commands.executeCommand('workbench.action.openSettings', endpointsSettingsKey());
-	});
-	context.subscriptions.push(commandDisposable);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('llamaCopilot.openEndpointSettings', () => {
+			vscode.commands.executeCommand('workbench.action.openSettings', endpointsSettingsKey());
+		})
+	);
 
-	// Get endpoints from configuration and register initial provider
-	const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-	const endpoints = config.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
-	registerProvider(normalizeEndpoints(endpoints));
-	updateInlineCompletionProvider(normalizeEndpoints(endpoints));
+	// Register managed server commands (always registered, guard on managed mode inside)
+	registerManagedCommands(context);
+
+	// Initial provider registration
+	refreshProviders(context);
 
 	// Listen for configuration changes
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
-		if (e.affectsConfiguration(endpointsConfigKey())) {
-			const newEndpoints = vscode.workspace
-				.getConfiguration(CONFIG_SECTION)
-				.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
-
-			// Unregister old provider and register new one with updated endpoints
-			const newProvider = registerProvider(normalizeEndpoints(newEndpoints));
-			updateInlineCompletionProvider(normalizeEndpoints(newEndpoints));
-			
-			// Fire change event on the new provider asynchronously to ensure
-			// the provider is fully registered before notifying VSCode
-			if (newProvider) {
-				// Use setTimeout to ensure the event fires after the current execution context
-				setTimeout(() => {
-					newProvider.fireChangeEvent();
-				}, 0);
-			}
+		if (e.affectsConfiguration(endpointsConfigKey()) || e.affectsConfiguration(`${CONFIG_SECTION}.server`)) {
+			refreshProviders(context);
 		}
 		if (e.affectsConfiguration(`${CONFIG_SECTION}.inlineCompletionModel`)) {
-			const newEndpoints = vscode.workspace
-				.getConfiguration(CONFIG_SECTION)
-				.get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
-			updateInlineCompletionProvider(normalizeEndpoints(newEndpoints));
+			refreshProviders(context);
 		}
 	});
-
 	context.subscriptions.push(configDisposable);
+
+	// Kick off managed server initialization in background (non-blocking)
+	if (isServerManaged()) {
+		initManagedServer(context).catch(err => {
+			const msg = err instanceof Error ? err.message : String(err);
+			vscode.window.showErrorMessage(`Managed llama-server initialization failed: ${msg}`);
+		});
+	}
 }
 
-export function deactivate() {
+function registerManagedCommands(context: vscode.ExtensionContext) {
+	context.subscriptions.push(
+		vscode.commands.registerCommand('llamaCopilot.startServer', async () => {
+			if (!isServerManaged()) {
+				vscode.window.showInformationMessage(
+					'Enable managed server mode first: set "llamaCopilot.server.managed" to true in settings.'
+				);
+				return;
+			}
+			if (!isSupportedPlatform()) {
+				vscode.window.showErrorMessage(
+					`Managed llama-server is not available for your platform (${process.platform}/${process.arch}). ` +
+					`You can still use the extension by running llama-server yourself and configuring an endpoint in Settings → Llama Copilot → Endpoints.`
+				);
+				return;
+			}
+			await initManagedServer(context);
+		}),
+
+		vscode.commands.registerCommand('llamaCopilot.stopServer', async () => {
+			if (serverManager) {
+				await serverManager.stop();
+				refreshProviders(context);
+			}
+		}),
+
+		vscode.commands.registerCommand('llamaCopilot.restartServer', async () => {
+			if (serverManager) {
+				await serverManager.restartWithConfirmation();
+				refreshProviders(context);
+			}
+		}),
+
+		vscode.commands.registerCommand('llamaCopilot.updateBinary', async () => {
+			if (!binaryManager || !serverManager) {
+				vscode.window.showInformationMessage('Managed server mode is not active.');
+				return;
+			}
+			await checkForUpdate(
+				{
+					binaryManager,
+					serverManager,
+					getAutoUpdateEnabled: isAutoUpdateEnabled,
+				},
+				true
+			);
+		}),
+
+		vscode.commands.registerCommand('llamaCopilot.manageModels', async () => {
+			if (!modelsIniManager) {
+				vscode.window.showInformationMessage('Managed server mode is not active.');
+				return;
+			}
+			await openModelsManager({
+				extensionUri: context.extensionUri,
+				modelsIniManager,
+				onModelsChanged: async () => {
+					if (serverManager && serverManager.getState() === 'running') {
+						await serverManager.restartWithConfirmation();
+						refreshProviders(context);
+					}
+				},
+			});
+		}),
+
+		vscode.commands.registerCommand('llamaCopilot.editModelsIni', async () => {
+			if (!modelsIniManager) {
+				vscode.window.showInformationMessage('Managed server mode is not active.');
+				return;
+			}
+			await modelsIniManager.ensureExists();
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(modelsIniManager.getIniPath()));
+			await vscode.window.showTextDocument(doc);
+		}),
+	);
+}
+
+async function initManagedServer(context: vscode.ExtensionContext): Promise<void> {
+	// Check platform support
+	if (!isSupportedPlatform()) {
+		vscode.window.showErrorMessage(
+			`Managed llama-server is not available for your platform (${process.platform}/${process.arch}). ` +
+			`You can still use the extension by running llama-server yourself and configuring an endpoint in Settings → Llama Copilot → Endpoints.`
+		);
+		return;
+	}
+
+	// Check if running workspace-side in a remote session
+	const remoteName = vscode.env.remoteName;
+	const ext = vscode.extensions.getExtension('delft-solutions.llama-copilot');
+	if (remoteName && ext?.extensionKind === vscode.ExtensionKind.Workspace) {
+		vscode.window.showInformationMessage(
+			'Managed server is not available in remote workspace mode. The extension prefers running locally where your GPU is. If you need it on the remote, configure an endpoint manually.'
+		);
+		return;
+	}
+
+	const globalStoragePath = context.globalStorageUri.fsPath;
+
+	// Initialize managers
+	if (!binaryManager) {
+		binaryManager = new BinaryManager({ globalStorageUri: context.globalStorageUri });
+	}
+	if (!modelsIniManager) {
+		modelsIniManager = new ModelsIniManager(globalStoragePath);
+	}
+
+	// Step 1: Ensure binary is installed
+	const isInstalled = await binaryManager.isInstalled();
+	if (!isInstalled) {
+		const latest = await binaryManager.latestVersion();
+		if (!latest) {
+			const retry = await vscode.window.showErrorMessage(
+				'Could not fetch the latest llama-server release from GitHub. Check your network connection.',
+				'Retry'
+			);
+			if (retry === 'Retry') {
+				return initManagedServer(context);
+			}
+			return;
+		}
+
+		const downloaded = await binaryManager.downloadWithProgress(latest);
+		if (!downloaded) return; // Cancelled
+	}
+
+	// Step 2: Run device query in background (non-blocking)
+	const cliPath = await binaryManager.getCurrentCliPath();
+	if (cliPath) {
+		queryDevices(cliPath).catch(() => { /* non-fatal */ });
+	}
+
+	// Step 3: Apply preset autoupdates
+	try {
+		await modelsIniManager.applyAutoupdates();
+	} catch (err) {
+		if (err instanceof UnsupportedIniVersionError) {
+			vscode.window.showWarningMessage(err.message);
+		} else {
+			throw err;
+		}
+	}
+
+	// Step 4: Check if models.ini exists
+	const hasIni = await modelsIniManager.exists();
+	if (!hasIni) {
+		const choice = await vscode.window.showInformationMessage(
+			'No models configured for managed llama-server. Open the Models Manager to select models.',
+			'Open Models Manager'
+		);
+		if (choice === 'Open Models Manager') {
+			await openModelsManager({
+				extensionUri: context.extensionUri,
+				modelsIniManager,
+				onModelsChanged: async () => {
+					// After models are configured, try starting the server
+					if (await modelsIniManager!.exists()) {
+						await startServer(context);
+					}
+				},
+			});
+		}
+		return;
+	}
+
+	// Step 5: Initialize and start server manager
+	await startServer(context);
+
+	// Step 6: Background auto-update check
+	if (isAutoUpdateEnabled()) {
+		checkForUpdate(
+			{
+				binaryManager: binaryManager!,
+				serverManager: serverManager!,
+				getAutoUpdateEnabled: isAutoUpdateEnabled,
+			},
+			false
+		).catch(() => { /* non-fatal */ });
+	}
+}
+
+async function startServer(context: vscode.ExtensionContext): Promise<void> {
+	if (!binaryManager || !modelsIniManager) return;
+
+	if (!serverManager) {
+		serverManager = new LlamaServerManager({
+			globalStoragePath: context.globalStorageUri.fsPath,
+			getServerBinaryPath: () => binaryManager!.getCurrentServerPath(),
+			getModelsIniPath: () => modelsIniManager!.getIniPath(),
+			getPort: getServerPort,
+			getExtraArgs: getServerExtraArgs,
+			getCurrentVersion: () => binaryManager!.currentVersion(),
+		});
+
+		// Listen for state changes to refresh providers
+		serverManager.onStateChanged(() => {
+			refreshProviders(context);
+		});
+
+		context.subscriptions.push(serverManager);
+	}
+
+	const hasIni = await modelsIniManager.exists();
+	if (!hasIni) return;
+
+	await serverManager.start(true);
+}
+
+export async function deactivate() {
+	if (serverManager && getStopOnDeactivate()) {
+		await serverManager.shutdown();
+	}
+
 	if (provider) {
 		provider.dispose();
 		provider = undefined;

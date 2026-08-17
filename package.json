@@ -20,6 +20,7 @@
 	"enabledApiProposals": [
 		"languageModelThinkingPart"
 	],
+	"extensionKind": ["ui", "workspace"],
 	"categories": [
 		"AI",
 		"Chat"
@@ -36,6 +37,30 @@
 			{
 				"command": "llamaCopilot.openEndpointSettings",
 				"title": "Open Endpoint Settings"
+			},
+			{
+				"command": "llamaCopilot.startServer",
+				"title": "LLaMA Copilot: Start Server"
+			},
+			{
+				"command": "llamaCopilot.stopServer",
+				"title": "LLaMA Copilot: Stop Server"
+			},
+			{
+				"command": "llamaCopilot.restartServer",
+				"title": "LLaMA Copilot: Restart Server"
+			},
+			{
+				"command": "llamaCopilot.updateBinary",
+				"title": "LLaMA Copilot: Update llama-server Binary"
+			},
+			{
+				"command": "llamaCopilot.manageModels",
+				"title": "LLaMA Copilot: Manage Models"
+			},
+			{
+				"command": "llamaCopilot.editModelsIni",
+				"title": "LLaMA Copilot: Edit models.ini"
 			}
 		],
 		"configuration": {
@@ -218,6 +243,36 @@
 					"type": "boolean",
 					"default": false,
 					"description": "Enable debug logging for inline completion requests, cancellations, and errors"
+				},
+				"llamaCopilot.server.managed": {
+					"type": "boolean",
+					"default": false,
+					"markdownDescription": "Enable managed llama-server mode. Downloads and runs llama-server automatically. Once enabled, [open the Models Manager](command:llamaCopilot.manageModels) to select which models to run."
+				},
+				"llamaCopilot.server.port": {
+					"type": "number",
+					"default": 8013,
+					"description": "Port for the managed llama-server instance."
+				},
+				"llamaCopilot.server.stopOnDeactivate": {
+					"type": "boolean",
+					"default": true,
+					"description": "Kill the managed llama-server when VS Code closes. Set to false to keep it running between sessions."
+				},
+				"llamaCopilot.server.autoUpdate": {
+					"type": "boolean",
+					"default": true,
+					"description": "Automatically update the llama-server binary when a new release is available (checks at most once per day)."
+				},
+				"llamaCopilot.server.extraArgs": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": [],
+					"description": "Additional command-line arguments passed to the managed llama-server (e.g. [\"--rate-limit\", \"600\"])."
+				},
+				"llamaCopilot.server.manageModels": {
+					"type": "null",
+					"markdownDescription": "Configure which models the managed server runs. [Open Models Manager ↗](command:llamaCopilot.manageModels)"
 				}
 			}
 		}

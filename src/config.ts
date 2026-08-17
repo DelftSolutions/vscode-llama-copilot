@@ -146,3 +146,40 @@ export function getInlineCompletionPrompt(): string {
 	return (v ?? '').trim();
 }
 
+// --- Managed server settings ---
+
+/**
+ * Whether managed llama-server mode is enabled.
+ */
+export function isServerManaged(): boolean {
+	return getConfig().get<boolean>('server.managed', false);
+}
+
+/**
+ * Port for the managed llama-server instance.
+ */
+export function getServerPort(): number {
+	return getConfig().get<number>('server.port', 8013);
+}
+
+/**
+ * Whether to kill the managed server when VS Code deactivates.
+ */
+export function getStopOnDeactivate(): boolean {
+	return getConfig().get<boolean>('server.stopOnDeactivate', true);
+}
+
+/**
+ * Whether auto-update of the llama-server binary is enabled.
+ */
+export function isAutoUpdateEnabled(): boolean {
+	return getConfig().get<boolean>('server.autoUpdate', true);
+}
+
+/**
+ * Additional CLI arguments passed to the managed llama-server.
+ */
+export function getServerExtraArgs(): string[] {
+	return getConfig().get<string[]>('server.extraArgs', []);
+}
+
