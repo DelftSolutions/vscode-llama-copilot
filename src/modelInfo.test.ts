@@ -7,6 +7,7 @@ import {
 	isChatCapable,
 	isSingleModelServer,
 	calculateMaxOutputTokens,
+	resolveEffectiveContextSize,
 	parseModelId,
 	getThinkingBudgetFraction,
 	computeThinkingBudgetTokens,
@@ -177,6 +178,32 @@ describe('calculateMaxOutputTokens', () => {
 
 	it('clamps to max 128000', () => {
 		expect(calculateMaxOutputTokens(1000000)).toBe(128000);
+	});
+});
+
+describe('resolveEffectiveContextSize', () => {
+	it('uses configured contextSize as absolute value', () => {
+		expect(resolveEffectiveContextSize(256000, 32768, 4)).toBe(256000);
+	});
+
+	it('does not divide configured contextSize by parallel', () => {
+		expect(resolveEffectiveContextSize(256000, null, 4)).toBe(256000);
+	});
+
+	it('divides extracted context by parallel when no config override', () => {
+		expect(resolveEffectiveContextSize(undefined, 256000, 4)).toBe(64000);
+	});
+
+	it('uses extracted context when parallel is absent', () => {
+		expect(resolveEffectiveContextSize(undefined, 256000, null)).toBe(256000);
+	});
+
+	it('falls back to default when nothing is available', () => {
+		expect(resolveEffectiveContextSize(undefined, null, null)).toBe(128000);
+	});
+
+	it('does not divide default by parallel', () => {
+		expect(resolveEffectiveContextSize(undefined, null, 4)).toBe(128000);
 	});
 });
 
