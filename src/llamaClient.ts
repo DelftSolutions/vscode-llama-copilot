@@ -32,7 +32,12 @@ import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, l
 
 import { normalizeFetchError, isConnectionResetError, describeFetchError } from './errorUtils';
 import { parseServerError, formatServerErrorMessage } from './serverErrorUtils';
-import { computeRateLimitDelayMs, RATE_LIMIT_RETRY_MAX_ATTEMPTS, RATE_LIMIT_RETRY_BASE_DELAY_MS } from './rateLimitUtils';
+import {
+	computeRateLimitDelayMs,
+	isRateLimitResponse,
+	RATE_LIMIT_RETRY_MAX_ATTEMPTS,
+	RATE_LIMIT_RETRY_BASE_DELAY_MS,
+} from './rateLimitUtils';
 import { computeThinkingBudgetTokens } from './modelInfo';
 import * as crypto from 'crypto';
 
@@ -83,8 +88,8 @@ async function withConnectionResetRetry<T>(
 }
 
 /**
- * Retries a fetch on HTTP 429 (rate limit) with exponential backoff or Retry-After.
- * Returns the final Response (which may still be 429 if all retries are exhausted).
+ * Retries a fetch on HTTP 429 (rate limit) or 503 (server loading) with exponential backoff or Retry-After.
+ * Returns the final Response (which may still be 429/503 if all retries are exhausted).
  */
 async function fetchWithRateLimitRetry(
 	doFetch: () => Promise<UndiciResponse>,
@@ -96,13 +101,17 @@ async function fetchWithRateLimitRetry(
 
 	for (let attempt = 0; ; attempt++) {
 		const response = await doFetch();
-		if (response.status !== 429 || attempt >= maxAttempts - 1) {
+		if (!isRateLimitResponse(response.status) || attempt >= maxAttempts - 1) {
 			return response;
 		}
 		await response.text().catch(() => {});
 		const retryAfter = response.headers.get('retry-after');
 		const delay = computeRateLimitDelayMs(attempt, retryAfter, baseDelayMs);
-		logError(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`, 'rateLimitRetry');
+		const logMessage =
+			response.status === 503
+				? `Server still loading, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`
+				: `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`;
+		logError(logMessage, 'rateLimitRetry');
 		await delayMs(delay, signal);
 	}
 }
@@ -192,7 +201,7 @@ export async function fetchModels(
 			return data;
 		});
 	} catch (error) {
-		handleApiError(error, 'fetchModels', ['Failed in fetchModels', 'Rate limit exceeded'], url);
+		handleApiError(error, 'fetchModels', ['Failed in fetchModels', 'Rate limit exceeded', 'Server is still loading'], url);
 	}
 }
 
@@ -822,7 +831,7 @@ export async function* streamChatCompletion(
 		handleApiError(
 			error,
 			'streamChatCompletion',
-			['Failed to stream chat completion', 'Response body is null', 'Rate limit exceeded', 'Llama-server reported an internal timeout'],
+			['Failed to stream chat completion', 'Response body is null', 'Rate limit exceeded', 'Server is still loading', 'Llama-server reported an internal timeout'],
 			url
 		);
 	}
@@ -883,7 +892,7 @@ export async function applyTemplate(
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
 		}
-		handleApiError(error, 'applyTemplate', ['Failed in applyTemplate', 'Rate limit exceeded'], url);
+		handleApiError(error, 'applyTemplate', ['Failed in applyTemplate', 'Rate limit exceeded', 'Server is still loading'], url);
 	}
 }
 
@@ -1014,7 +1023,7 @@ export async function tokenize(
 			return tokenCount;
 		});
 	} catch (error) {
-		handleApiError(error, 'tokenize', ['Failed in tokenize', 'Rate limit exceeded'], url);
+		handleApiError(error, 'tokenize', ['Failed in tokenize', 'Rate limit exceeded', 'Server is still loading'], url);
 	}
 }
 
@@ -1201,6 +1210,6 @@ export async function requestInfill(
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
 		}
-		handleApiError(error, 'requestInfill', ['Failed in requestInfill', 'Rate limit exceeded'], url);
+		handleApiError(error, 'requestInfill', ['Failed in requestInfill', 'Rate limit exceeded', 'Server is still loading'], url);
 	}
 }
