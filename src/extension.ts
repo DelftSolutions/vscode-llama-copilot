@@ -7,6 +7,7 @@ import {
 	CONFIG_ENDPOINTS,
 	endpointsConfigKey,
 	endpointsSettingsKey,
+	getConfig,
 	getInlineCompletionModel,
 	isServerManaged,
 	getServerPort,
@@ -22,6 +23,7 @@ import { ModelsIniManager, UnsupportedIniVersionError } from './server/modelsIni
 import { queryDevices, invalidateDeviceCache } from './server/deviceQuery';
 import { checkForUpdate } from './server/autoUpdate';
 import { openModelsManager } from './server/modelsIniUI';
+import { OnboardingOrchestrator } from './onboarding/onboarding';
 
 let provider: LlamaCopilotChatProvider | undefined;
 let providerDisposable: vscode.Disposable | undefined;
@@ -29,6 +31,7 @@ let inlineCompletionDisposable: vscode.Disposable | undefined;
 let serverManager: LlamaServerManager | undefined;
 let binaryManager: BinaryManager | undefined;
 let modelsIniManager: ModelsIniManager | undefined;
+let onboarding: OnboardingOrchestrator | undefined;
 
 /**
  * Normalize endpoint URL by stripping trailing `/` or `/v1`
@@ -160,8 +163,15 @@ export function activate(context: vscode.ExtensionContext) {
 	refreshProviders(context);
 
 	// Listen for configuration changes
+	let wasServerManaged = isServerManaged();
 	const configDisposable = vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
 		if (e.affectsConfiguration(endpointsConfigKey()) || e.affectsConfiguration(`${CONFIG_SECTION}.server`)) {
+			const nowManaged = isServerManaged();
+			if (nowManaged && !wasServerManaged) {
+				// User enabled managed mode mid-session → guide them through setup.
+				getOnboarding(context).runForManaged().catch(() => { /* non-fatal */ });
+			}
+			wasServerManaged = nowManaged;
 			refreshProviders(context);
 		}
 		if (e.affectsConfiguration(`${CONFIG_SECTION}.inlineCompletionModel`)) {
@@ -170,12 +180,68 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(configDisposable);
 
-	// Kick off managed server initialization in background (non-blocking)
+	// Kick off onboarding + managed server initialization in the background
+	// (non-blocking). The onboarding wizard drives setup for new or partially
+	// set-up users; once onboarding is done (or silently skipped for legacy
+	// setups with a working configuration) the normal managed init runs.
+	void kickOffManagedInit(context);
+}
+
+/**
+ * Decide between the onboarding wizard and the normal managed init:
+ * - wizard → the wizard drives everything, including the server start on
+ *   completion; skip initManagedServer() to avoid racing the wizard.
+ * - normal → onboarding is complete or not applicable; run managed init as
+ *   before (only when managed mode is on).
+ */
+async function kickOffManagedInit(context: vscode.ExtensionContext): Promise<void> {
+	const outcome = await getOnboarding(context).maybeAutoRun().catch(err => {
+		// Onboarding must never break activation — fall back to normal init.
+		const msg = err instanceof Error ? err.message : String(err);
+		vscode.window.showWarningMessage(`Llama Copilot setup could not start: ${msg}`);
+		return 'normal' as const;
+	});
+	if (outcome === 'wizard') return;
+
 	if (isServerManaged()) {
 		initManagedServer(context).catch(err => {
 			const msg = err instanceof Error ? err.message : String(err);
 			vscode.window.showErrorMessage(`Managed llama-server initialization failed: ${msg}`);
 		});
+	}
+}
+
+/** Create the onboarding orchestrator (singleton) with closures over the module-level managers. */
+function getOnboarding(context: vscode.ExtensionContext): OnboardingOrchestrator {
+	if (!onboarding) {
+		onboarding = new OnboardingOrchestrator({
+			globalState: context.globalState,
+			globalStoragePath: context.globalStorageUri.fsPath,
+			extensionUri: context.extensionUri,
+			ensureManagers: () => ensureManagers(context),
+			getBinaryManager: () => binaryManager,
+			getModelsIniManager: () => modelsIniManager,
+			getServerManager: () => serverManager,
+			startServer: () => startServer(context),
+			runBackgroundUpdateCheck,
+			isManaged: isServerManaged,
+			hasUserEndpoints: () => {
+				const endpoints = getConfig().get<EndpointsConfig>(CONFIG_ENDPOINTS, {});
+				return Object.keys(endpoints).length > 0;
+			},
+			getPort: getServerPort,
+		});
+	}
+	return onboarding;
+}
+
+/** Create the binary/models-ini managers if they don't exist yet. */
+async function ensureManagers(context: vscode.ExtensionContext): Promise<void> {
+	if (!binaryManager) {
+		binaryManager = new BinaryManager({ globalStorageUri: context.globalStorageUri });
+	}
+	if (!modelsIniManager) {
+		modelsIniManager = new ModelsIniManager(context.globalStorageUri.fsPath);
 	}
 }
 
@@ -253,6 +319,10 @@ function registerManagedCommands(context: vscode.ExtensionContext) {
 			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(modelsIniManager.getIniPath()));
 			await vscode.window.showTextDocument(doc);
 		}),
+
+		vscode.commands.registerCommand('llamaCopilot.onboarding', () => {
+			void getOnboarding(context).run();
+		}),
 	);
 }
 
@@ -276,15 +346,9 @@ async function initManagedServer(context: vscode.ExtensionContext): Promise<void
 		return;
 	}
 
-	const globalStoragePath = context.globalStorageUri.fsPath;
-
 	// Initialize managers
-	if (!binaryManager) {
-		binaryManager = new BinaryManager({ globalStorageUri: context.globalStorageUri });
-	}
-	if (!modelsIniManager) {
-		modelsIniManager = new ModelsIniManager(globalStoragePath);
-	}
+	await ensureManagers(context);
+	if (!binaryManager || !modelsIniManager) return; // unreachable — ensureManagers creates them
 
 	// Step 1: Ensure binary is installed
 	const isInstalled = await binaryManager.isInstalled();
@@ -344,15 +408,28 @@ async function initManagedServer(context: vscode.ExtensionContext): Promise<void
 		return;
 	}
 
-	// Step 5: Initialize and start server manager
-	await startServer(context);
+	// Steps 5–6: start the server + background auto-update check
+	await startServerAndAutoUpdate(context);
+}
 
-	// Step 6: Background auto-update check
-	if (isAutoUpdateEnabled()) {
+/**
+ * Start the managed server (creating the manager if needed) and kick off the
+ * background binary auto-update check. Shared by the normal managed init and
+ * the onboarding wizard completion path.
+ */
+async function startServerAndAutoUpdate(context: vscode.ExtensionContext): Promise<void> {
+	if (!binaryManager || !modelsIniManager) return;
+	await startServer(context);
+	runBackgroundUpdateCheck();
+}
+
+/** Background binary auto-update check (no-op if not applicable). */
+function runBackgroundUpdateCheck(): void {
+	if (serverManager && binaryManager && isAutoUpdateEnabled()) {
 		checkForUpdate(
 			{
-				binaryManager: binaryManager!,
-				serverManager: serverManager!,
+				binaryManager,
+				serverManager,
 				getAutoUpdateEnabled: isAutoUpdateEnabled,
 			},
 			false
@@ -388,6 +465,9 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
 }
 
 export async function deactivate() {
+	onboarding?.dispose();
+	onboarding = undefined;
+
 	if (serverManager && getStopOnDeactivate()) {
 		await serverManager.shutdown();
 	}

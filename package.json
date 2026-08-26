@@ -35,6 +35,10 @@
 		],
 		"commands": [
 			{
+				"command": "llamaCopilot.onboarding",
+				"title": "Llama Copilot: Run Setup"
+			},
+			{
 				"command": "llamaCopilot.openEndpointSettings",
 				"title": "Open Endpoint Settings"
 			},

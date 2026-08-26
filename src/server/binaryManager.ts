@@ -138,11 +138,78 @@ export class BinaryManager {
 
 	/**
 	 * Download and install the binary for the given version.
-	 * Shows a progress notification with cancel support.
+	 * Throws on failure or cancellation ('Download cancelled').
 	 */
 	async download(
 		version: string,
 		token?: vscode.CancellationToken
+	): Promise<void> {
+		await this.downloadCore(version, { token });
+	}
+
+	/**
+	 * Download with a VS Code progress notification.
+	 * Returns true on success, false if cancelled.
+	 */
+	async downloadWithProgress(version: string): Promise<boolean> {
+		let lastPercent = 0;
+		return vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Notification,
+				title: `Downloading llama-server (${getAssetFilename(version)})...`,
+				cancellable: true,
+			},
+			async (progress, token) => {
+				try {
+					await this.downloadCore(version, {
+						token,
+						onProgress: percent => {
+							progress.report({
+								increment: percent - lastPercent,
+								message: `${percent}%`,
+							});
+							lastPercent = percent;
+						},
+					});
+					return true;
+				} catch (e) {
+					if ((e as Error).message === 'Download cancelled') {
+						return false;
+					}
+					throw e;
+				}
+			}
+		);
+	}
+
+	/**
+	 * Download, reporting percentage progress (0-100) via callback for UIs that
+	 * render their own progress (e.g. the onboarding wizard panel).
+	 * Returns true on success, false if cancelled.
+	 */
+	async downloadWithCallback(
+		version: string,
+		onProgress: (percent: number) => void
+	): Promise<boolean> {
+		try {
+			await this.downloadCore(version, { onProgress });
+			return true;
+		} catch (e) {
+			if ((e as Error).message === 'Download cancelled') {
+				return false;
+			}
+			throw e;
+		}
+	}
+
+	/**
+	 * Shared download pipeline: fetch → write → extract → quarantine/chmod →
+	 * verify → state update. `onProgress` is called with integer percentages
+	 * (only when the value increases) as download chunks arrive.
+	 */
+	private async downloadCore(
+		version: string,
+		opts: { token?: vscode.CancellationToken; onProgress?: (percent: number) => void } = {}
 	): Promise<void> {
 		const asset = getPlatformAsset();
 		const filename = getAssetFilename(version);
@@ -169,9 +236,10 @@ export class BinaryManager {
 
 			const chunks: Uint8Array[] = [];
 			let downloaded = 0;
+			let lastPercent = 0;
 
 			while (true) {
-				if (token?.isCancellationRequested) {
+				if (opts.token?.isCancellationRequested) {
 					reader.cancel();
 					throw new Error('Download cancelled');
 				}
@@ -180,6 +248,14 @@ export class BinaryManager {
 				if (done) break;
 				chunks.push(value);
 				downloaded += value.length;
+
+				if (contentLength > 0 && opts.onProgress) {
+					const percent = Math.floor((downloaded / contentLength) * 100);
+					if (percent > lastPercent) {
+						lastPercent = percent;
+						opts.onProgress(percent);
+					}
+				}
 			}
 
 			// Write to file
@@ -206,114 +282,16 @@ export class BinaryManager {
 			const state = await this.readState();
 			state.currentVersion = version;
 			await this.writeState(state);
-
+		} catch (e) {
+			if ((e as Error).message === 'Download cancelled') {
+				// Clean up partial extraction
+				try { await fs.rm(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+			}
+			throw e;
 		} finally {
 			// Clean up archive file
 			try { await fs.unlink(archivePath); } catch { /* ignore */ }
 		}
-	}
-
-	/**
-	 * Download with a VS Code progress notification.
-	 */
-	async downloadWithProgress(version: string): Promise<boolean> {
-		const filename = getAssetFilename(version);
-
-		return vscode.window.withProgress(
-			{
-				location: vscode.ProgressLocation.Notification,
-				title: `Downloading llama-server (${filename})...`,
-				cancellable: true,
-			},
-			async (progress, token) => {
-				const asset = getPlatformAsset();
-				const downloadUrl = `https://github.com/ggml-org/llama.cpp/releases/download/b${version}/${filename}`;
-
-				const extractDir = path.join(this.binDir, version);
-				await fs.mkdir(extractDir, { recursive: true });
-
-				const archivePath = path.join(this.binDir, filename);
-
-				try {
-					const response = await fetch(downloadUrl, {
-						headers: { 'User-Agent': USER_AGENT },
-					});
-
-					if (!response.ok) {
-						throw new Error(`Download failed: HTTP ${response.status}`);
-					}
-
-					const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
-					const reader = response.body?.getReader();
-					if (!reader) throw new Error('No response body');
-
-					const chunks: Uint8Array[] = [];
-					let downloaded = 0;
-					let lastPercent = 0;
-
-					while (true) {
-						if (token.isCancellationRequested) {
-							reader.cancel();
-							throw new Error('Download cancelled');
-						}
-
-						const { done, value } = await reader.read();
-						if (done) break;
-						chunks.push(value);
-						downloaded += value.length;
-
-						if (contentLength > 0) {
-							const percent = Math.floor((downloaded / contentLength) * 100);
-							if (percent > lastPercent) {
-								progress.report({
-									increment: percent - lastPercent,
-									message: `${percent}%`,
-								});
-								lastPercent = percent;
-							}
-						}
-					}
-
-					// Write to file
-					const buffer = Buffer.concat(chunks);
-					await fs.writeFile(archivePath, buffer);
-
-					progress.report({ message: 'Extracting...' });
-
-					// Extract
-					await this.extract(archivePath, extractDir, asset.ext);
-
-					// macOS quarantine removal
-					if (process.platform === 'darwin') {
-						await this.clearQuarantine(extractDir);
-					}
-
-					// chmod +x on Unix
-					if (process.platform !== 'win32') {
-						await this.makeExecutable(extractDir);
-					}
-
-					// Verify binary exists
-					await this.verifyBinary(extractDir);
-
-					// Update state
-					const state = await this.readState();
-					state.currentVersion = version;
-					await this.writeState(state);
-
-					return true;
-				} catch (e) {
-					if ((e as Error).message === 'Download cancelled') {
-						// Clean up partial extraction
-						try { await fs.rm(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
-						return false;
-					}
-					throw e;
-				} finally {
-					try { await fs.unlink(archivePath); } catch { /* ignore */ }
-				}
-			}
-		);
 	}
 
 	private async extract(archivePath: string, extractDir: string, ext: string): Promise<void> {

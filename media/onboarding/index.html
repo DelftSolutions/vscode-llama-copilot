@@ -1,0 +1,575 @@
+<!--
+================================================================================
+  Llama Copilot — Onboarding Wizard Webview
+================================================================================
+
+  THIS FILE IS A DUMB VIEW. It renders state and forwards clicks. All logic
+  (downloading, model recommendation, server lifecycle, persistence) lives in
+  the extension host:
+      - src/onboarding/onboarding.ts   (orchestrator — owns the state)
+      - src/onboarding/wizardUI.ts     (panel + the shared TS types)
+      - src/onboarding/wizardHtml.test.ts  (contract test — guards this file)
+
+  How it is loaded
+  ----------------
+  `OnboardingWizardPanel.reveal()` (wizardUI.ts) reads this file from disk,
+  replaces the bare placeholder token __LLAMA_ONBOARDING_ICON_URL__ (the real
+  one, used as `const ICON_URL = __LLAMA_ONBOARDING_ICON_URL__;` in the
+  script) with a JSON string literal holding the webview URI of
+  llama1-icon.png — all occurrences are replaced (the token is also mentioned
+  in these docs, which is fine), — and assigns the result to `webview.html`.
+  Do not reference this file from anywhere else without updating wizardUI.ts.
+  Note: the file is a TEMPLATE, not standalone HTML — opening it directly in
+  a browser fails on the placeholder by design.
+
+--------------------------------------------------------------------------------
+  THE PROTOCOL (one direction at a time)
+--------------------------------------------------------------------------------
+
+  HOST → WEBVIEW  (one message type only)
+
+      panel.webview.postMessage({ type: 'setState', state })
+
+  `state` is ALWAYS the complete `WizardState` object (see wizardUI.ts).
+  The host sends the full state on every change — never patches. The webview
+  stores it and re-renders the matching screen.
+
+  Fields of `state` (all fields are always present — never optional in
+  practice, `null`/`false`/`[]` are the "empty" values):
+
+      step: 'mode' | 'downloading' | 'model' | 'starting' | 'done'
+          Which screen to render. render() switches on this.
+
+      // Screen 1 (mode)
+      selectedMode: 'managed' | 'advanced' | 'skip' | null
+          Which option card is highlighted.
+
+      // Screen 1.1 (downloading)
+      downloadPercent: number | null     0..100, or null while connecting
+      downloadError:   { title, detail } | null   categorized error, or null
+
+      // Screen 2 (model)
+      hardwareLine:    string            e.g. "M3 Pro · 18 GB RAM · 40 GB free disk"
+      recommendedReason: string | null   the "why this model" clarification
+      models:          WizardModelOption[]
+          { id, displayName, minRamMB, exceedsRam, isRecommended }
+      selectedPresetId: string | null    the model card the user picked
+      showAllModels:   boolean           whether the extra list is expanded
+
+      // Screen 3 (starting)
+      systemChecked:   boolean           checkmark 1 (always true on this screen)
+      serverStarted:   boolean           checkmark 2
+      loadingModelName: string | null    set once the model is loading
+      startError:      { title, detail } | null   or null while healthy
+
+  WEBVIEW → HOST  (the `WizardAction` union, wizardUI.ts)
+
+      post({ type: 'ready' })              once, after the script has bound
+                                           listeners (see lifecycle below)
+      post({ type: 'selectMode', mode })   user clicked an option card
+      post({ type: 'continue' })           user clicked Continue (screen 1)
+      post({ type: 'back' })               user clicked Back
+      post({ type: 'retry' })             user clicked Retry (error screens)
+      post({ type: 'selectModel', presetId })  user clicked a model card
+      post({ type: 'toggleShowAll' })      user clicked See/Hide other models
+      post({ type: 'start' })             user clicked Start (screen 2)
+      post({ type: 'close' })             user clicked Close (screen 3) —
+                                           the server keeps starting in the
+                                           background; the wizard resumes
+                                           next launch
+      post({ type: 'openChat' })          user clicked Open Chat (done screen)
+
+--------------------------------------------------------------------------------
+  LIFECYCLE — the `ready` handshake (do not remove!)
+--------------------------------------------------------------------------------
+
+  1. Host creates the panel and sets `webview.html` (this file).
+  2. Any `setState` messages posted between panel creation and script
+     startup are LOST — the webview has no listeners yet.
+  3. This script finishes binding and posts `{ type: 'ready' }`.
+  4. The host responds by re-sending the full current state, so the webview
+     always converges to the correct screen even if it started late.
+  5. The panel uses `retainContextWhenHidden: true`: hiding it does NOT
+     reload the page, so `ready` fires once per page load, and `state`
+     survives hide/show cycles.
+
+--------------------------------------------------------------------------------
+  WORKED EXAMPLE — "user clicks Continue on the mode screen"
+--------------------------------------------------------------------------------
+
+  1. WEBVIEW:  user clicks the Continue button.
+               bindEvents() handler runs:  post({ type: 'continue' })
+  2. HOST:     onboarding.ts handleAction({ type: 'continue' })
+               - persists step 'downloading'
+               - calls updateState({ step: 'downloading', ... })
+                 → posts { type: 'setState', state: { step: 'downloading',
+                    downloadPercent: null, ... } }
+               - starts the binary download
+  3. WEBVIEW:  message listener stores the new state, render() runs,
+               renderDownloading() paints the progress bar.
+  4. HOST:     download progress callback → updateState({ downloadPercent: 42 })
+               → another full setState message (percent 42).
+  5. HOST:     download succeeds → updateState({ step: 'model', models: [...],
+               selectedPresetId: 'qwen3-4b', ... }) → renderModel() paints.
+
+  Adding a new clickable element (example):
+      HTML:    <button id="my-btn">Do thing</button>
+      JS:      const btn = document.getElementById('my-btn');
+               if (btn) btn.addEventListener('click', () => post({ type: 'doThing' }));
+      Then (in the TS side, not here): add `{ type: 'doThing' }` to the
+      WizardAction union in wizardUI.ts, handle it in onboarding.ts
+      handleAction(), and add 'doThing' to WIZARD_ACTION_TYPES — the
+      contract test enforces the webview side of that.
+
+--------------------------------------------------------------------------------
+  RULES — read before editing (the contract test checks several of these)
+--------------------------------------------------------------------------------
+
+  1. NEVER rename a message `type` string. The host matches on exact strings
+     (WizardAction / WizardState in wizardUI.ts). If you must add an action,
+     follow the worked example above.
+  2. NEVER add `<script src=...>`, `<link>`, or any http(s):// resource.
+     VS Code webviews run under a strict CSP — remote content is blocked and
+     the panel would break silently. Everything stays inline in this file.
+  3. ALWAYS escape dynamic (non-hardcoded) text with esc() before inserting
+     it into innerHTML. The state contains model names and error details.
+  4. Keep the render/bindEvents pattern: render() replaces #content's
+     innerHTML, which destroys listeners — so bindEvents() must re-run after
+     every render. Do not cache DOM nodes across renders.
+  5. Style with --vscode-* CSS variables (see the <style> block) so the panel
+     follows light/dark themes. The only fixed layout values are the card
+     width and progress-bar dimensions.
+  6. The webview must stay a pure view: no fetch(), no localStorage, no
+     timers that drive logic, no knowledge of ports/paths/versions. If you
+     find yourself wanting state here, it belongs in onboarding.ts.
+  7. To add a screen: add the step value to WizardStep (wizardUI.ts), write
+     a renderXxx() here, add a case to render(), document the new state
+     fields in the block above, and (if there are new actions) update
+     WIZARD_ACTION_TYPES + wizardHtml.test.ts.
+  8. Run `npm test` after changes — wizardHtml.test.ts validates the
+     protocol contract of this file.
+
+  Placeholder: __LLAMA_ONBOARDING_ICON_URL__ is replaced at load time.
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Llama Copilot Setup</title>
+<style>
+	body {
+		font-family: var(--vscode-font-family);
+		font-size: var(--vscode-font-size);
+		color: var(--vscode-foreground);
+		background: var(--vscode-editor-background);
+		margin: 0;
+		padding: 24px 16px;
+		display: flex;
+		justify-content: center;
+	}
+	.card {
+		width: 100%;
+		max-width: 560px;
+	}
+	h1 {
+		font-size: 1.3em;
+		font-weight: 600;
+		margin: 0 0 16px;
+	}
+	.subtitle {
+		color: var(--vscode-descriptionForeground);
+		margin: 0 0 16px;
+	}
+	.option, .model-card {
+		border: 1px solid var(--vscode-widget-border);
+		border-radius: 4px;
+		padding: 12px;
+		margin-bottom: 10px;
+		cursor: pointer;
+	}
+	.option:hover, .model-card:hover {
+		border-color: var(--vscode-focusBorder);
+	}
+	.option.selected, .model-card.selected {
+		border-color: var(--vscode-focusBorder);
+		background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.08));
+	}
+	.model-card.disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.title {
+		font-weight: 600;
+	}
+	.desc {
+		font-size: 0.85em;
+		color: var(--vscode-descriptionForeground);
+		margin-top: 2px;
+	}
+	.ram-info {
+		font-size: 0.8em;
+		color: var(--vscode-descriptionForeground);
+		margin-top: 4px;
+	}
+	.note {
+		font-size: 0.8em;
+		color: var(--vscode-descriptionForeground);
+		margin-top: 10px;
+		line-height: 1.4;
+	}
+	.hardware {
+		font-size: 0.9em;
+		color: var(--vscode-descriptionForeground);
+		margin-bottom: 14px;
+	}
+	.reason {
+		font-size: 0.85em;
+		color: var(--vscode-descriptionForeground);
+		margin: -4px 0 12px 4px;
+	}
+	.badge {
+		display: inline-block;
+		background: var(--vscode-badge-background, var(--vscode-button-background));
+		color: var(--vscode-badge-foreground, var(--vscode-button-foreground));
+		font-size: 0.72em;
+		font-weight: 600;
+		padding: 2px 8px;
+		border-radius: 10px;
+		margin-left: 8px;
+		vertical-align: middle;
+		white-space: nowrap;
+	}
+	.progress-track {
+		height: 6px;
+		border-radius: 3px;
+		background: var(--vscode-input-background, rgba(128, 128, 128, 0.25));
+		overflow: hidden;
+		margin: 4px 0 6px;
+	}
+	.progress-fill {
+		height: 100%;
+		background: var(--vscode-progressBar-background);
+		width: 0%;
+		transition: width 0.2s ease;
+	}
+	.progress-indeterminate .progress-fill {
+		width: 40%;
+		transition: none;
+		animation: slide 1.2s ease-in-out infinite;
+	}
+	@keyframes slide {
+		0% { margin-left: -40%; }
+		100% { margin-left: 100%; }
+	}
+	.percent {
+		font-size: 0.85em;
+		color: var(--vscode-descriptionForeground);
+	}
+	.error-block {
+		background: var(--vscode-inputValidation-errorBackground);
+		color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+		border: 1px solid var(--vscode-inputValidation-errorBorder);
+		padding: 10px 12px;
+		border-radius: 4px;
+		margin: 12px 0;
+	}
+	.error-block .err-title {
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+	.error-block .err-detail {
+		font-size: 0.85em;
+		line-height: 1.4;
+	}
+	.checks {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 16px;
+	}
+	.checks li {
+		padding: 6px 0;
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+	.checks li.pending {
+		color: var(--vscode-descriptionForeground);
+		opacity: 0.6;
+	}
+	.check {
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 10px;
+		flex-shrink: 0;
+	}
+	.check.empty {
+		background: transparent;
+		border: 1px solid var(--vscode-descriptionForeground);
+	}
+	.footer {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-top: 20px;
+		padding-top: 14px;
+		border-top: 1px solid var(--vscode-widget-border);
+		gap: 8px;
+	}
+	button {
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		border: none;
+		padding: 5px 16px;
+		border-radius: 2px;
+		cursor: pointer;
+		font-size: 0.9em;
+	}
+	button:hover {
+		background: var(--vscode-button-hoverBackground);
+	}
+	button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.secondary-btn {
+		background: var(--vscode-button-secondaryBackground);
+		color: var(--vscode-button-secondaryForeground);
+	}
+	.secondary-btn:hover {
+		background: var(--vscode-button-secondaryHoverBackground);
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		color: var(--vscode-textLink-foreground);
+		cursor: pointer;
+		padding: 0;
+		font-size: 0.85em;
+		text-decoration: underline;
+		margin: 4px 0 10px;
+	}
+	.done {
+		text-align: center;
+		padding: 24px 0;
+	}
+	.done img {
+		width: 72px;
+		height: 72px;
+		margin-bottom: 16px;
+	}
+	.done h1 {
+		margin-bottom: 8px;
+	}
+</style>
+</head>
+<body>
+<div class="card"><div id="content">Loading...</div></div>
+<script>
+(function() {
+	const vscode = acquireVsCodeApi();
+	// Replaced by the host (wizardUI.ts) with a JSON string literal holding
+	// the webview URI of the llama icon. Must stay a bare token (no quotes
+	// around it) — the host substitutes a fully quoted string.
+	const ICON_URL = __LLAMA_ONBOARDING_ICON_URL__;
+	let state = null;
+
+	window.addEventListener('message', event => {
+		const msg = event.data;
+		if (msg.type === 'setState') {
+			state = msg.state;
+			render();
+		}
+	});
+
+	function esc(s) {
+		return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({
+			'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+		}[c]));
+	}
+
+	function post(action) {
+		vscode.postMessage(action);
+	}
+
+	function errorBlock(err) {
+		if (!err) return '';
+		return '<div class="error-block"><div class="err-title">' + esc(err.title) +
+			'</div><div class="err-detail">' + esc(err.detail) + '</div></div>';
+	}
+
+	function checkItem(done, label) {
+		const checkClass = done ? 'check' : 'check empty';
+		const inner = done ? '&#10003;' : '';
+		return '<li class="' + (done ? '' : 'pending') + '"><span class="' + checkClass + '">' +
+			inner + '</span><span>' + esc(label) + '</span></li>';
+	}
+
+	function footer(left, right) {
+		return '<div class="footer">' + (left || '<span></span>') + (right || '<span></span>') + '</div>';
+	}
+
+	function optionCard(mode, title, desc) {
+		const selected = state.selectedMode === mode ? ' selected' : '';
+		return '<div class="option' + selected + '" data-mode="' + mode + '">' +
+			'<div class="title">' + esc(title) + '</div>' +
+			'<div class="desc">' + esc(desc) + '</div></div>';
+	}
+
+	function modelCard(m) {
+		const cls = ['model-card',
+			m.id === state.selectedPresetId ? 'selected' : '',
+			m.exceedsRam ? 'disabled' : ''
+		].filter(Boolean).join(' ');
+		let html = '<div class="' + cls + '" data-model="' + esc(m.id) + '"' +
+			(m.exceedsRam ? ' title="Needs more RAM than available on this machine"' : '') + '>';
+		html += '<div class="title">' + esc(m.displayName);
+		if (m.isRecommended) html += '<span class="badge">Recommended for your machine</span>';
+		html += '</div>';
+		html += '<div class="ram-info">Needs ~' + Math.ceil(m.minRamMB / 1024) + ' GB RAM' +
+			(m.exceedsRam ? ' — not enough on this machine' : '') + '</div>';
+		html += '</div>';
+		return html;
+	}
+
+	function renderMode() {
+		let html = '<h1>How do you want to run your local model?</h1>';
+		html += optionCard('managed', 'We download everything and start it for you',
+			'Recommended. We fetch llama-server, pick a model that fits your machine, and start it for you.');
+		html += optionCard('skip', 'Skip, not now',
+			'You can run the setup later from the command palette: \u201CLlama Copilot: Run Setup\u201D.');
+		html += optionCard('advanced', "I'll bring my own server (Advanced)",
+			'Point the extension at an existing llama-server endpoint in Settings.');
+		html += '<div class="note">* Managed mode starts a background process, auto-starts it on every VS Code launch, ' +
+			'enables binary auto-update, and occupies port 8013.</div>';
+		html += footer('<button class="secondary-btn" disabled>Back</button>',
+			'<button id="continue">Continue</button>');
+		return html;
+	}
+
+	function renderDownloading() {
+		let html = '<h1>Getting llama-server ready</h1>';
+		html += '<div class="subtitle">Downloading llama-server from GitHub (~100 MB)</div>';
+		const pct = state.downloadPercent;
+		html += '<div class="progress-track"><div class="progress-fill" style="width:' +
+			(pct === null || pct === undefined ? 0 : pct) + '%"></div></div>';
+		html += '<div class="percent">' +
+			(pct === null || pct === undefined ? 'Connecting...' : pct + '%') + '</div>';
+		html += errorBlock(state.downloadError);
+		const right = state.downloadError ? '<button id="retry">Retry</button>' : '<span></span>';
+		html += footer('<button id="back" class="secondary-btn">Back</button>', right);
+		return html;
+	}
+
+	function renderModel() {
+		let html = '<h1>Pick your model</h1>';
+		if (state.hardwareLine) {
+			html += '<div class="hardware">' + esc(state.hardwareLine) + '</div>';
+		}
+		const rec = state.models.find(m => m.isRecommended);
+		if (rec) {
+			html += modelCard(rec);
+			if (state.recommendedReason) {
+				html += '<div class="reason">' + esc(state.recommendedReason) + '</div>';
+			}
+		}
+		const others = state.models.filter(m => !m.isRecommended);
+		if (others.length > 0) {
+			html += '<button id="show-all" class="link-btn">' +
+				(state.showAllModels ? 'Hide other models' :
+					'See all models (' + others.length + ' available)') + '</button>';
+			if (state.showAllModels) {
+				for (const m of others) {
+					html += modelCard(m);
+				}
+			}
+		}
+		html += footer('<button id="back" class="secondary-btn">Back</button>',
+			'<button id="start"' + (state.selectedPresetId ? '' : ' disabled') + '>Start</button>');
+		return html;
+	}
+
+	function renderStarting() {
+		let html = '<h1>Starting your model</h1>';
+		html += '<ul class="checks">';
+		html += checkItem(true, 'Checked your system');
+		html += checkItem(state.serverStarted, 'Started llama-server');
+		html += '</ul>';
+		if (state.startError) {
+			html += errorBlock(state.startError);
+		} else if (state.loadingModelName) {
+			html += '<div class="subtitle">Loading ' + esc(state.loadingModelName) + '...</div>';
+			html += '<div class="progress-track progress-indeterminate"><div class="progress-fill"></div></div>';
+			html += '<div class="note">It can take a while on the first run — the model is downloaded to your machine. ' +
+				'You can close this panel and check back later; the status bar keeps working.</div>';
+		} else {
+			html += '<div class="subtitle">Starting the server...</div>';
+			html += '<div class="progress-track progress-indeterminate"><div class="progress-fill"></div></div>';
+		}
+		html += footer('<span></span>',
+			'<button id="retry" class="secondary-btn">Retry</button><button id="close">Close</button>');
+		return html;
+	}
+
+	function renderDone() {
+		let html = '<div class="done">';
+		if (ICON_URL) html += '<img src="' + ICON_URL + '" alt="">';
+		html += '<h1>Your local model works.</h1>';
+		html += '<div class="subtitle">Open chat and type your first request.</div>';
+		html += '<button id="open-chat">Open Chat</button>';
+		html += '</div>';
+		return html;
+	}
+
+	function render() {
+		if (!state) return;
+		const el = document.getElementById('content');
+		let html = '';
+		switch (state.step) {
+			case 'mode': html = renderMode(); break;
+			case 'downloading': html = renderDownloading(); break;
+			case 'model': html = renderModel(); break;
+			case 'starting': html = renderStarting(); break;
+			case 'done': html = renderDone(); break;
+			default: return;
+		}
+		el.innerHTML = html;
+		bindEvents();
+	}
+
+	function bindEvents() {
+		document.querySelectorAll('[data-mode]').forEach(card => {
+			card.addEventListener('click', () => post({ type: 'selectMode', mode: card.dataset.mode }));
+		});
+		const cont = document.getElementById('continue');
+		if (cont) cont.addEventListener('click', () => post({ type: 'continue' }));
+		const back = document.getElementById('back');
+		if (back && !back.disabled) back.addEventListener('click', () => post({ type: 'back' }));
+		const retry = document.getElementById('retry');
+		if (retry) retry.addEventListener('click', () => post({ type: 'retry' }));
+		document.querySelectorAll('[data-model]').forEach(card => {
+			if (card.classList.contains('disabled')) return;
+			card.addEventListener('click', () => post({ type: 'selectModel', presetId: card.dataset.model }));
+		});
+		const start = document.getElementById('start');
+		if (start) start.addEventListener('click', () => post({ type: 'start' }));
+		const close = document.getElementById('close');
+		if (close) close.addEventListener('click', () => post({ type: 'close' }));
+		const openChat = document.getElementById('open-chat');
+		if (openChat) openChat.addEventListener('click', () => post({ type: 'openChat' }));
+		const showAll = document.getElementById('show-all');
+		if (showAll) showAll.addEventListener('click', () => post({ type: 'toggleShowAll' }));
+	}
+
+	vscode.postMessage({ type: 'ready' });
+})();
+</script>
+</body>
+</html>

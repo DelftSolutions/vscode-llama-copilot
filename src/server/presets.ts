@@ -11,6 +11,12 @@ export interface ModelPreset {
 	displayName: string;
 	/** Minimum system RAM (MB) needed to run this model */
 	minRamMB: number;
+	/**
+	 * Relative model quality (higher = better). Used by the onboarding
+	 * recommendation to prefer quality over raw speed when picking a model
+	 * that fits the machine.
+	 */
+	qualityRank: number;
 	/** INI config lines (without section header or tracking comment) */
 	iniLines: string[];
 	/** Version number -- bumped when we change the preset config */
@@ -30,6 +36,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		id: 'qwen3-4b',
 		displayName: 'Qwen 3 4B (Q8)',
 		minRamMB: 5120,
+		qualityRank: 2,
 		version: 1,
 		iniLines: [
 			'jinja = true',
@@ -45,6 +52,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		id: 'gemma3-4b-it',
 		displayName: 'Gemma 3 4B IT (Q8)',
 		minRamMB: 5120,
+		qualityRank: 1,
 		version: 1,
 		iniLines: [
 			'jinja = true',
@@ -58,6 +66,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 	{
 		id: 'glm-4.5-air-5bit',
 		displayName: 'GLM 4.5 AIR (Q5)',
+		qualityRank: 3,
 		minRamMB: 10240,
 		version: 1,
 		iniLines: [
@@ -72,6 +81,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 	{
 		id: 'nemotron-3-nano-30b',
 		displayName: 'Nemotron 3 Nano 30B (BF16)',
+		qualityRank: 6,
 		minRamMB: 65536,
 		version: 1,
 		iniLines: [
@@ -86,6 +96,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 	},
 	{
 		id: 'glm-4-7-flash',
+		qualityRank: 4,
 		displayName: 'GLM 4.7 Flash (BF16)',
 		minRamMB: 16384,
 		version: 1,
@@ -101,6 +112,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		],
 	},
 	{
+		qualityRank: 5,
 		id: 'qwen3-30b-a3b',
 		displayName: 'Qwen 3 30B-A3B (Q5)',
 		minRamMB: 24576,
@@ -118,6 +130,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		],
 	},
 	{
+		qualityRank: 7,
 		id: 'gemma3-27b-it',
 		displayName: 'Gemma 3 27B IT (Q4)',
 		minRamMB: 20480,

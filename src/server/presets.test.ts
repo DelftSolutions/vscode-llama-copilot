@@ -28,6 +28,14 @@ describe('presets', () => {
 			}
 		});
 
+		it('all presets have a positive, unique qualityRank', () => {
+			const ranks = MODEL_PRESETS.map(p => p.qualityRank);
+			for (const preset of MODEL_PRESETS) {
+				expect(preset.qualityRank).toBeGreaterThanOrEqual(1);
+			}
+			expect(new Set(ranks).size).toBe(ranks.length);
+		});
+
 		it('all presets have version >= 1', () => {
 			for (const preset of MODEL_PRESETS) {
 				expect(preset.version).toBeGreaterThanOrEqual(1);
