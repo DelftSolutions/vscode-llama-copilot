@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+/**
+ * Dev tool — preview the onboarding wizard in a plain browser.
+ *
+ * `media/onboarding/index.html` is a TEMPLATE, not standalone HTML: the
+ * `__LLAMA_WEBVIEW_SCRIPTS__` placeholder and the bare
+ * `__LLAMA_ONBOARDING_ICON_URL__` token are not executable outside VS Code,
+ * `acquireVsCodeApi()` does not exist, and most `--vscode-*` tokens have no
+ * fallback. This script generates `preview/onboarding.html` (gitignored) with
+ * shims injected:
+ *
+ *   1. scripts placeholder → inline <script> blocks of webview-core.js and
+ *      wizard-controller.js (the host would inject <script src> tags instead)
+ *   2. icon token → data URI of the real llama1-icon.png
+ *   3. acquireVsCodeApi() → console shim (webview → host actions are logged)
+ *   4. --vscode-* tokens → Light+/Dark+ values, toggleable from the toolbar
+ *   5. a dev-only toolbar to jump straight to every screen/state
+ *
+ * The toolbar states are complete WizardState objects (see wizardUI.ts) —
+ * they exercise every element: option/model cards (selected/disabled),
+ * badges, progress (determinate/indeterminate/error), checks, error blocks,
+ * all button states, and the done screen with the real icon.
+ *
+ * The source of truth stays index.html — nothing here is shipped.
+ *
+ * Usage:
+ *   npm run preview:wizard          # generate + open in default browser
+ *   node scripts/preview-wizard.mjs --no-open
+ *
+ * NOTE: token values mirror the VS Code default themes (Dark+/Light+).
+ * editor.background, widget.border, editor.foreground, etc. are read from
+ * the app bundle's base themes; the workbench-level defaults (buttons,
+ * badges, input validation, ...) are the canonical built-in values. If you
+ * want a different theme previewed, adjust TOKENS below.
+ */
+
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const TEMPLATE_PATH = join(ROOT, 'media', 'onboarding', 'index.html');
+const CORE_PATH = join(ROOT, 'media', 'js', 'webview-core.js');
+const CONTROLLER_PATH = join(ROOT, 'media', 'onboarding', 'wizard-controller.js');
+const ICON_PATH = join(ROOT, 'llama1-icon.png');
+const OUT_PATH = join(ROOT, 'preview', 'onboarding.html');
+
+const ICON_TOKEN = '__LLAMA_ONBOARDING_ICON_URL__';
+const SCRIPTS_TOKEN = '__LLAMA_WEBVIEW_SCRIPTS__';
+
+// ---------------------------------------------------------------------------
+// 1. Icon — real asset as a data URI (the host would inject a webview URI).
+// ---------------------------------------------------------------------------
+let iconDataUri = '';
+try {
+	iconDataUri = 'data:image/png;base64,' + readFileSync(ICON_PATH).toString('base64');
+} catch {
+	console.warn('warning: llama1-icon.png not found — done screen will show no icon');
+}
+
+// ---------------------------------------------------------------------------
+// 2. --vscode-* token values for the default themes.
+// ---------------------------------------------------------------------------
+const TOKENS = {
+	light: {
+		'foreground': '#333333',
+		'descriptionForeground': '#616161',
+		'editor-background': '#FFFFFF',
+		'widget-border': '#D4D4D4',
+		'focusBorder': '#0090F1',
+		'list-activeSelectionBackground': '#0090F1',
+		'list-activeSelectionForeground': '#FFFFFF',
+		'badge-background': '#007ACC',
+		'badge-foreground': '#FFFFFF',
+		'button-background': '#007ACC',
+		'button-foreground': '#FFFFFF',
+		'button-hoverBackground': '#0062A3',
+		'button-secondaryBackground': '#F0F0F0',
+		'button-secondaryForeground': '#333333',
+		'button-secondaryHoverBackground': '#E5E5E5',
+		'input-background': '#FFFFFF',
+		'progressBar-background': '#0E70C0',
+		'inputValidation-errorBackground': '#F66',
+		'inputValidation-errorForeground': '#333333',
+		'inputValidation-errorBorder': '#E48575',
+		'inputValidation-warningBackground': '#F6E7B1',
+		'inputValidation-warningForeground': '#333333',
+		'inputValidation-warningBorder': '#CBDB7D',
+		'textLink-foreground': '#0064D1',
+	},
+	dark: {
+		'foreground': '#CCCCCC',
+		'descriptionForeground': '#7F8C98',
+		'editor-background': '#1E1E1E',
+		'widget-border': '#303031',
+		'focusBorder': '#007FD4',
+		'list-activeSelectionBackground': '#04395E',
+		'list-activeSelectionForeground': '#FFFFFF',
+		'badge-background': '#4D4D4D',
+		'badge-foreground': '#FFFFFF',
+		'button-background': '#0E639C',
+		'button-foreground': '#FFFFFF',
+		'button-hoverBackground': '#1177BB',
+		'button-secondaryBackground': '#3A3D41',
+		'button-secondaryForeground': '#FFFFFF',
+		'button-secondaryHoverBackground': '#45494E',
+		'input-background': '#3C3C3C',
+		'progressBar-background': '#2AA1C0',
+		'inputValidation-errorBackground': '#F48771',
+		'inputValidation-errorForeground': '#222222',
+		'inputValidation-errorBorder': '#BE1100',
+		'inputValidation-warningBackground': '#F5C84C',
+		'inputValidation-warningForeground': '#1E1E1E',
+		'inputValidation-warningBorder': '#A67F00',
+		'textLink-foreground': '#3794FF',
+	},
+};
+
+function tokenCss(name, values) {
+	const lines = Object.entries(values).map(([k, v]) => `\t\t--vscode-${k}: ${v};`);
+	return `\t:${name} {\n${lines.join('\n')}\n\t}`;
+}
+
+// ---------------------------------------------------------------------------
+// 3. Shims + dev toolbar. The harness is appended right before </body>, so
+//    it runs AFTER the wizard's IIFE (message listener + postMessage ready
+//    are already in place) — the same ordering as the real host.
+// ---------------------------------------------------------------------------
+const HEAD_SHIM = `
+	<style id="llama-preview-tokens">
+${tokenCss('root', TOKENS.light)}
+${tokenCss('root.vscode-dark', TOKENS.dark)}
+	</style>
+	<script>
+	window.acquireVsCodeApi = function() {
+		return {
+			postMessage: action => console.log('[webview -> host]', action),
+			getState: () => null,
+		};
+	};
+	</script>`;
+
+const HARNESS = `
+<script id="llama-preview-harness">
+(function() {
+	'use strict';
+
+	var base = {
+		step: 'mode',
+		selectedMode: null,
+		downloadPercent: null,
+		downloadError: null,
+		hardwareLine: 'M3 Pro \\u00B7 18 GB RAM \\u00B7 40 GB free disk',
+		recommendedReason: null,
+		models: [],
+		selectedPresetId: null,
+		showAllModels: false,
+		systemChecked: false,
+		serverStarted: false,
+		loadingModelName: null,
+		startError: null
+	};
+
+	var MODELS = [
+		{ id: 'qwen3-4b', displayName: 'Qwen3 4B (Q4_K_M)', minRamMB: 4600, exceedsRam: false, isRecommended: true },
+		{ id: 'qwen3-8b', displayName: 'Qwen3 8B (Q4_K_M)', minRamMB: 8200, exceedsRam: false, isRecommended: false },
+		{ id: 'llama-3.1-8b', displayName: 'Llama 3.1 8B (Q5_K_M)', minRamMB: 9100, exceedsRam: false, isRecommended: false },
+		{ id: 'qwen3-14b', displayName: 'Qwen3 14B (Q4_K_M)', minRamMB: 14800, exceedsRam: false, isRecommended: false },
+		{ id: 'llama-3.1-70b', displayName: 'Llama 3.1 70B (Q4_K_M)', minRamMB: 68000, exceedsRam: true, isRecommended: false }
+	];
+
+	var STATES = [
+		{ label: '1a \\u00B7 mode \\u2014 none selected', state: { selectedMode: null } },
+		{ label: '1b \\u00B7 mode \\u2014 managed selected', state: { selectedMode: 'managed' } },
+		{ label: '2a \\u00B7 downloading \\u2014 connecting', state: { step: 'downloading' } },
+		{ label: '2b \\u00B7 downloading \\u2014 42%', state: { step: 'downloading', downloadPercent: 42 } },
+		{ label: '2c \\u00B7 downloading \\u2014 error', state: { step: 'downloading', downloadPercent: 37, downloadError: { title: 'Network error', detail: 'The download was interrupted. Check your connection and try again. (ENOTFOUND github.com)' } } },
+		{ label: '3a \\u00B7 model \\u2014 recommended', state: { step: 'model', recommendedReason: 'Best fit: needs ~5 GB of your 18 GB RAM, leaves headroom for VS Code and your project.', models: MODELS, selectedPresetId: 'qwen3-4b' } },
+		{ label: '3b \\u00B7 model \\u2014 all expanded', state: { step: 'model', recommendedReason: 'Best fit: needs ~5 GB of your 18 GB RAM, leaves headroom for VS Code and your project.', models: MODELS, selectedPresetId: 'qwen3-8b', showAllModels: true } },
+		{ label: '3c \\u00B7 model \\u2014 none selected', state: { step: 'model', models: MODELS, selectedPresetId: null } },
+		{ label: '4a \\u00B7 starting \\u2014 waiting', state: { step: 'starting', systemChecked: true, serverStarted: false } },
+		{ label: '4b \\u00B7 starting \\u2014 loading model', state: { step: 'starting', systemChecked: true, serverStarted: true, loadingModelName: 'Qwen3 4B (Q4_K_M)' } },
+		{ label: '4c \\u00B7 starting \\u2014 error', state: { step: 'starting', systemChecked: true, serverStarted: true, startError: { title: 'Server failed to start', detail: 'Port 8013 is already in use. Close the other process and retry.' } } },
+		{ label: '5 \\u00B7 done', state: { step: 'done', systemChecked: true, serverStarted: true } }
+	];
+
+	function show(i) {
+		var state = Object.assign({}, base, STATES[i].state);
+		state.models = state.models.slice();
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'setState', state: state } }));
+		var active = document.querySelector('[data-state-index="' + i + '"]');
+		if (active) {
+			active.style.fontWeight = '700';
+			active.style.outline = '2px solid #007FD4';
+		}
+	}
+
+	var bar = document.createElement('div');
+	bar.id = 'llama-preview-bar';
+	bar.innerHTML = STATES.map(function (s, i) {
+		return '<button type="button" data-state-index="' + i + '">' + s.label + '</button>';
+	}).join('') +
+		'<button type="button" id="llama-preview-theme">Theme: light</button>';
+	document.body.insertBefore(bar, document.body.firstChild);
+
+	bar.addEventListener('click', function (e) {
+		var btn = e.target.closest('button');
+		if (!btn) return;
+		if (btn.id === 'llama-preview-theme') {
+			var html = document.documentElement;
+			var dark = html.classList.toggle('vscode-dark');
+			btn.textContent = 'Theme: ' + (dark ? 'dark' : 'light');
+			return;
+		}
+		var idx = Number(btn.getAttribute('data-state-index'));
+		if (!Number.isNaN(idx)) show(idx);
+	});
+
+	show(0);
+})();
+</script>`;
+
+const HARNESS_CSS = `
+<style id="llama-preview-bar-style">
+	#llama-preview-bar {
+		position: sticky;
+		top: 0;
+		z-index: 1000;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		padding: 8px;
+		background: rgba(22, 22, 28, 0.97);
+		border-bottom: 1px solid #444;
+		font-family: system-ui, sans-serif;
+		font-size: 12px;
+	}
+	#llama-preview-bar button {
+		background: #2d2d35;
+		color: #e6e6e6;
+		border: 1px solid #4a4a55;
+		border-radius: 4px;
+		padding: 4px 10px;
+		cursor: pointer;
+	}
+	#llama-preview-bar button:hover {
+		background: #3a3a44;
+	}
+	#llama-preview-theme {
+		margin-left: auto;
+	}
+</style>`;
+
+// ---------------------------------------------------------------------------
+// Generate.
+// ---------------------------------------------------------------------------
+const template = readFileSync(TEMPLATE_PATH, 'utf8');
+const core = readFileSync(CORE_PATH, 'utf8');
+const controller = readFileSync(CONTROLLER_PATH, 'utf8');
+const count = (template.match(new RegExp(ICON_TOKEN, 'g')) || []).length;
+if (count === 0) {
+	console.error('error: ' + ICON_TOKEN + ' not found in ' + TEMPLATE_PATH +
+		' — the template contract changed, update this script');
+	process.exit(1);
+}
+if (!template.includes(SCRIPTS_TOKEN)) {
+	console.error('error: ' + SCRIPTS_TOKEN + ' not found in ' + TEMPLATE_PATH +
+		' — the template contract changed, update this script');
+	process.exit(1);
+}
+// Same global replaces the host does (wizardUI.ts): the icon token sits in
+// the <img src> attribute (raw string, no JSON quoting) and the scripts
+// token in the body; both also occur in the header documentation.
+let html = template.split(ICON_TOKEN).join(iconDataUri);
+// The host injects <script src> tags (webview origin); the plain-browser
+// preview inlines the same two files instead — core FIRST, controller
+// second, and BEFORE the harness below (the harness dispatches setState
+// after the controller has booted).
+html = html.split(SCRIPTS_TOKEN).join(
+	'\n<script>\n' + core + '\n</script>\n<script>\n' + controller + '\n</script>\n'
+);
+
+html = html.replace('</head>', HEAD_SHIM + '\n</head>');
+html = html.replace('</body>', HARNESS_CSS + '\n' + HARNESS + '\n</body>');
+
+if (html.includes(ICON_TOKEN) || html.includes(SCRIPTS_TOKEN)) {
+	console.error('error: a template token survived the replacement');
+	process.exit(1);
+}
+
+mkdirSync(dirname(OUT_PATH), { recursive: true });
+writeFileSync(OUT_PATH, html, 'utf8');
+console.log('wrote ' + OUT_PATH + '  (' + count + ' icon-token occurrence(s) replaced)');
+
+if (!process.argv.includes('--no-open')) {
+	const cmd = process.platform === 'darwin' ? 'open'
+		: process.platform === 'win32' ? 'start'
+			: 'xdg-open';
+	spawnSync(cmd, [OUT_PATH], { stdio: 'ignore' });
+}

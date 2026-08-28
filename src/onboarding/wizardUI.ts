@@ -1,12 +1,19 @@
 /**
  * Onboarding wizard webview panel.
  *
- * The panel markup lives in `media/onboarding/index.html` (a standalone file
- * so designers can edit the UI without touching TypeScript). The protocol
- * between this file and the HTML — message types, state shape, lifecycle —
- * is documented at the top of that HTML file and enforced by
- * `wizardHtml.test.ts`. The `WizardState` / `WizardAction` types below are
- * the single source of truth for the contract.
+ * The panel markup lives in `media/onboarding/index.html` (static HTML, so
+ * designers can edit the UI without touching TypeScript); interactivity
+ * lives in `media/onboarding/wizard-controller.js`, built on the shared
+ * kernel `media/js/webview-core.js`. The protocol between this file and the
+ * webview — message types, state shape, lifecycle — is documented at the top
+ * of that HTML file and enforced by `wizardHtml.test.ts`. The
+ * `WizardState` / `WizardAction` types below are the single source of truth
+ * for the contract.
+ *
+ * The HTML is a TEMPLATE: `loadWebviewHtml()` replaces two placeholders
+ * (`__LLAMA_WEBVIEW_SCRIPTS__` → the two injected <script> tags,
+ * `__LLAMA_ONBOARDING_ICON_URL__` → the icon webview URI) before assigning
+ * it to `webview.html`.
  *
  * Data flow (one direction at a time):
  *   host → webview:  postMessage({ type: 'setState', state })   (full state, always)
@@ -20,11 +27,36 @@ import * as path from 'path';
 /** Path of the wizard webview HTML, relative to the extension root. */
 const WEBVIEW_HTML_RELATIVE_PATH = path.join('media', 'onboarding', 'index.html');
 
+/** Shared webview kernel (Stimulus-like), relative to the extension root. */
+const WEBVIEW_CORE_JS_RELATIVE_PATH = path.join('media', 'js', 'webview-core.js');
+
+/** Wizard controller, relative to the extension root. */
+const WIZARD_CONTROLLER_JS_RELATIVE_PATH = path.join('media', 'onboarding', 'wizard-controller.js');
+
 /** Placeholder in the HTML replaced with the webview URI of the llama icon. */
 const ICON_URL_PLACEHOLDER = '__LLAMA_ONBOARDING_ICON_URL__';
 
+/**
+ * Placeholder in the HTML replaced with the two <script> tags (core first,
+ * controller second) pointing at webview-origin URIs.
+ */
+const WEBVIEW_SCRIPTS_PLACEHOLDER = '__LLAMA_WEBVIEW_SCRIPTS__';
+
 /** The screen currently shown in the wizard. */
 export type WizardStep = 'mode' | 'downloading' | 'model' | 'starting' | 'done';
+
+/**
+ * All wizard screens (mirrors the WizardStep union). wizardHtml.test.ts
+ * uses this to verify the static HTML has one <section> per screen — keep
+ * in sync when adding a step to WizardStep.
+ */
+export const WIZARD_STEPS: readonly WizardStep[] = [
+	'mode',
+	'downloading',
+	'model',
+	'starting',
+	'done',
+];
 
 /** Mode selected on the first screen ('skip' is an action, not persisted as a mode). */
 export type WizardModeChoice = 'managed' | 'advanced' | 'skip';
@@ -153,11 +185,19 @@ export class OnboardingWizardPanel {
 	}
 
 	/**
-	 * Load the wizard HTML from media/onboarding/index.html, inject the
-	 * icon URL, and assign it to the panel.
+	 * Assemble the wizard webview from media/onboarding/index.html,
+	 * media/js/webview-core.js, and media/onboarding/wizard-controller.js,
+	 * and assign it to the panel.
 	 *
-	 * The load is async: state posted before the webview's script runs is
-	 * lost, but the webview sends { type: 'ready' } once loaded and the
+	 * The HTML is a template: the `__LLAMA_WEBVIEW_SCRIPTS__` placeholder is
+	 * replaced with two <script> tags pointing at webview-origin URIs (the
+	 * VS Code CSP blocks remote content, so local files must be injected
+	 * through asWebviewUri), and `__LLAMA_ONBOARDING_ICON_URL__` (the img
+	 * src) with the icon's webview URI. Both placeholders also occur in the
+	 * header documentation comments, so the replace is global.
+	 *
+	 * The load is async: state posted before the webview's scripts run is
+	 * lost, but the webview sends { type: 'ready' } once booted and the
 	 * host responds by re-sending the full current state (see the lifecycle
 	 * section in the HTML file header).
 	 */
@@ -171,13 +211,21 @@ export class OnboardingWizardPanel {
 			const iconUrl = panel.webview
 				.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'llama1-icon.png'))
 				.toString();
-			// Global replace: the placeholder token also appears in the header
-			// documentation comments, and a first-occurrence-only replace would
-			// hit a comment before the real `const ICON_URL` line.
-			panel.webview.html = template.replace(
-				new RegExp(ICON_URL_PLACEHOLDER, 'g'),
-				JSON.stringify(iconUrl)
-			);
+
+			const scriptTag = (relativePath: string): string => {
+				const uri = panel.webview
+					.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, relativePath))
+					.toString();
+				return '<script src="' + uri + '"></script>';
+			};
+			// Core FIRST (defines LlamaWebview), controller second (boots).
+			const scripts =
+				scriptTag(WEBVIEW_CORE_JS_RELATIVE_PATH) +
+				scriptTag(WIZARD_CONTROLLER_JS_RELATIVE_PATH);
+
+			panel.webview.html = template
+				.replace(new RegExp(WEBVIEW_SCRIPTS_PLACEHOLDER, 'g'), scripts)
+				.replace(new RegExp(ICON_URL_PLACEHOLDER, 'g'), iconUrl);
 		} catch (err) {
 			// The HTML ships with the extension; a read failure means a broken
 			// install. Show a minimal error instead of a blank panel.

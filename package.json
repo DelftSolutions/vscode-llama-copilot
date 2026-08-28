@@ -288,8 +288,7 @@
 		"postinstall": "npm run download-api",
 		"compile": "tsc -p ./",
 		"test": "vitest run",
-		"lint": "eslint",
-		"watch": "tsc -watch -p ./"
+		"lint": "eslint",	"preview:wizard": "node scripts/preview-wizard.mjs",		"watch": "tsc -watch -p ./"
 	},
 	"dependencies": {
 		"undici": "^6.21.0"

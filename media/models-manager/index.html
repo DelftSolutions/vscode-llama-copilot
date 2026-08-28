@@ -1,0 +1,296 @@
+<!--
+================================================================================
+  Llama Copilot — Models Manager Webview
+================================================================================
+
+  STATIC MARKUP. Every element of the models manager lives here: the error
+  banner, the preset table (rows cloned from the <template> below), the
+  user-sections list, and the footer. All interactivity lives in two scripts
+  (injected by the host, see below):
+      - media/js/webview-core.js                        (shared kernel)
+      - media/models-manager/models-manager-controller.js   (this view's
+        controller)
+  All logic (ini parsing/writing, presets, system info) lives in the
+  extension host:
+      - src/server/modelsIniUI.ts        (panel + host message handling)
+      - src/server/modelsIniManager.ts   (models.ini read/write)
+      - src/server/modelsIniHtml.test.ts (contract test — guards these files)
+
+  How it is loaded
+  ----------------
+  `openModelsManager()` (modelsIniUI.ts) reads this file,
+  models-manager-controller.js, and webview-core.js from disk, replaces the
+  `__LLAMA_WEBVIEW_SCRIPTS__` placeholder with two <script> tags pointing at
+  webview-origin URIs (core FIRST, controller second), and assigns the result
+  to `webview.html`. This file is a TEMPLATE — the placeholder is not
+  executable outside VS Code by design.
+
+--------------------------------------------------------------------------------
+  THE PROTOCOL (one direction at a time)
+--------------------------------------------------------------------------------
+
+  HOST → WEBVIEW  (one message type only)
+
+      panel.webview.postMessage({ type: 'setState', state })
+
+  `state` is ALWAYS the complete `WebviewState` object (see modelsIniUI.ts).
+  The host sends the full state on every change — never patches. The core
+  forwards it to `ModelsManagerController.applyState(state)`, which rebuilds
+  the preset rows from the <template> and fills the static targets.
+
+  Fields of `state`:
+      presets: PresetViewState[]
+          { id, displayName, minRamMB, enabled, autoupdate, deprecated,
+            successorName, successorId, version, currentVersion, hasUpdate,
+            exceedsRam, exceedsVram }
+      userSections: string[]          section names the user added to models.ini
+      systemRamMB:  number
+      totalVramMB:  number
+      iniFormatError: { fileVersion, supportedVersion } | undefined
+          set when models.ini uses a newer format version — the whole table
+          becomes read-only (the <fieldset> is disabled), the banner shows.
+
+  WEBVIEW → HOST  (the `WebviewMessage` union, modelsIniUI.ts)
+
+      post({ type: 'ready' })                  once, after the controller
+                                               booted (posted by webview-core.js)
+      post({ type: 'toggleEnabled', presetId, enabled })
+      post({ type: 'toggleAutoupdate', presetId, autoupdate })
+      post({ type: 'upgrade', presetId })
+      post({ type: 'migrate', presetId })
+      post({ type: 'openIni' })
+
+  Actions are declared on the elements themselves:
+      data-action="change->mm#toggleEnabled"   (event + controller)
+      data-action="mm#openIni"                 (click, implicit)
+  webview-core.js routes them (delegated on the app root) to the matching
+  method of models-manager-controller.js, which posts the action. The
+  presetId is read from the row's data-preset-id attribute. Because routing
+  is delegated, cloned rows need no rebinding.
+
+--------------------------------------------------------------------------------
+  RULES — read before editing (the contract test checks several of these)
+--------------------------------------------------------------------------------
+
+  1. NEVER rename a message `type` string. The host matches on exact strings
+     (WebviewMessage in modelsIniUI.ts).
+  2. NEVER add `<script src=...>`, `<link>`, or any http(s):// resource.
+     The VS Code webview CSP blocks remote content; the webview scripts are
+     injected by the host through the __LLAMA_WEBVIEW_SCRIPTS__ placeholder.
+  3. The controller fills dynamic text with textContent / setAttribute only
+     — never build HTML strings with dynamic data via innerHTML.
+  4. Preset rows are cloned from the <template>; re-query per row, do not
+     cache DOM nodes across applyState calls.
+  5. Read-only mode (unsupported ini format) is ONE `fieldset.disabled =
+     true` on the controls target — the footer stays usable on purpose.
+  6. Style with --vscode-* CSS variables (see the <style> block) so the
+     panel follows light/dark themes.
+  7. The webview must stay a pure view: no fetch(), no localStorage, no
+     knowledge of ports/paths/versions.
+  8. Run `npm test` after changes — modelsIniHtml.test.ts validates the
+     protocol contract of these files.
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLaMA Models Manager</title>
+<style>
+	body {
+		font-family: var(--vscode-font-family);
+		font-size: var(--vscode-font-size);
+		color: var(--vscode-foreground);
+		background: var(--vscode-editor-background);
+		padding: 16px;
+		margin: 0;
+	}
+	/* Author styles (e.g. .badge { display: inline-block }) would otherwise
+	   override the UA stylesheet's [hidden] rule. */
+	[hidden] {
+		display: none !important;
+	}
+	h1 {
+		font-size: 1.4em;
+		margin-bottom: 16px;
+		font-weight: 600;
+	}
+	fieldset {
+		border: none;
+		padding: 0;
+		margin: 0;
+	}
+	.preset-table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+	.preset-table th {
+		text-align: left;
+		padding: 8px 12px;
+		border-bottom: 1px solid var(--vscode-widget-border);
+		font-weight: 600;
+		font-size: 0.85em;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--vscode-descriptionForeground);
+	}
+	.preset-table td {
+		padding: 8px 12px;
+		border-bottom: 1px solid var(--vscode-widget-border);
+		vertical-align: middle;
+	}
+	.preset-row.disabled {
+		opacity: 0.5;
+	}
+	.preset-row.deprecated td {
+		background: var(--vscode-inputValidation-warningBackground, rgba(255, 200, 0, 0.05));
+	}
+	.badge {
+		display: inline-block;
+		padding: 2px 6px;
+		border-radius: 3px;
+		font-size: 0.75em;
+		font-weight: 600;
+		margin-left: 8px;
+	}
+	.badge-deprecated {
+		background: var(--vscode-inputValidation-warningBackground);
+		color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+		border: 1px solid var(--vscode-inputValidation-warningBorder);
+	}
+	.badge-warning {
+		color: var(--vscode-editorWarning-foreground);
+	}
+	.ram-info {
+		font-size: 0.85em;
+		color: var(--vscode-descriptionForeground);
+	}
+	button {
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		border: none;
+		padding: 4px 12px;
+		border-radius: 2px;
+		cursor: pointer;
+		font-size: 0.85em;
+	}
+	button:hover {
+		background: var(--vscode-button-hoverBackground);
+	}
+	button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.secondary-btn {
+		background: var(--vscode-button-secondaryBackground);
+		color: var(--vscode-button-secondaryForeground);
+	}
+	.secondary-btn:hover {
+		background: var(--vscode-button-secondaryHoverBackground);
+	}
+	input[type="checkbox"] {
+		width: 16px;
+		height: 16px;
+		cursor: pointer;
+	}
+	input[type="checkbox"]:disabled {
+		cursor: not-allowed;
+	}
+	.user-section {
+		margin-top: 24px;
+		padding-top: 16px;
+		border-top: 1px solid var(--vscode-widget-border);
+	}
+	.user-section h2 {
+		font-size: 1.1em;
+		margin-bottom: 8px;
+	}
+	.user-model {
+		padding: 4px 0;
+		color: var(--vscode-descriptionForeground);
+	}
+	.footer {
+		margin-top: 16px;
+		padding-top: 12px;
+		border-top: 1px solid var(--vscode-widget-border);
+	}
+	.tooltip {
+		position: relative;
+		cursor: help;
+	}
+	.tooltip .tooltip-text {
+		visibility: hidden;
+		background: var(--vscode-editorHoverWidget-background);
+		color: var(--vscode-editorHoverWidget-foreground);
+		border: 1px solid var(--vscode-editorHoverWidget-border);
+		padding: 4px 8px;
+		border-radius: 3px;
+		position: absolute;
+		z-index: 100;
+		bottom: 125%;
+		left: 0;
+		white-space: nowrap;
+		font-size: 0.85em;
+	}
+	.tooltip:hover .tooltip-text {
+		visibility: visible;
+	}
+	.error-banner {
+		background: var(--vscode-inputValidation-errorBackground);
+		color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+		border: 1px solid var(--vscode-inputValidation-errorBorder);
+		padding: 10px 12px;
+		border-radius: 3px;
+		margin-bottom: 16px;
+	}
+</style>
+</head>
+<body>
+<div data-controller="mm">
+	<h1>LLaMA Models Manager</h1>
+
+	<div class="error-banner" data-mm-target="errorBanner" hidden></div>
+
+	<!-- The <fieldset> wraps ONLY the table: disabling it (unsupported ini
+	     format) makes every checkbox/button in the table read-only while the
+	     footer below stays usable. -->
+	<fieldset data-mm-target="controls">
+		<table class="preset-table">
+			<thead>
+				<tr><th>Enabled</th><th>Model</th><th>RAM</th><th>Auto-update</th><th></th></tr>
+			</thead>
+			<tbody data-mm-target="presetRows"></tbody>
+		</table>
+	</fieldset>
+
+	<!-- One row per preset, cloned by the controller. data-preset-id is set
+	     per clone; the action handlers read it via el.closest('tr'). -->
+	<template data-mm-target="presetRowTemplate">
+		<tr class="preset-row">
+			<td><input type="checkbox" data-action="change->mm#toggleEnabled"></td>
+			<td>
+				<span class="name"></span><span class="badge badge-deprecated" hidden>Deprecated</span><span class="badge badge-warning tooltip" hidden>⚠️ VRAM<span class="tooltip-text">Model exceeds GPU VRAM. Will use CPU offloading (slower).</span></span>
+			</td>
+			<td class="ram-info">
+				<span class="ram"></span><span class="tooltip" hidden>❌<span class="tooltip-text">Requires more RAM than available (system RAM minus 8GB headroom)</span></span>
+			</td>
+			<td><input type="checkbox" data-action="change->mm#toggleAutoupdate"></td>
+			<td class="action-cell"><button data-action="mm#upgrade" hidden></button></td>
+		</tr>
+	</template>
+
+	<div class="user-section" data-mm-target="userSection" hidden>
+		<h2>User-Added Models</h2>
+		<div data-mm-target="userModels"></div>
+	</div>
+
+	<div class="footer">
+		<button class="secondary-btn" data-action="mm#openIni">Edit models.ini</button>
+		<span class="ram-info" data-mm-target="footerRam" hidden></span>
+		<span class="ram-info" data-mm-target="footerVram" hidden></span>
+	</div>
+</div>
+__LLAMA_WEBVIEW_SCRIPTS__
+</body>
+</html>

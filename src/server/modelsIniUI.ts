@@ -2,9 +2,23 @@
  * WebviewPanel-based Models Manager UI.
  * Shows presets with enabled/autoupdate checkboxes, RAM/VRAM gating,
  * deprecation badges, and upgrade buttons.
+ *
+ * The panel markup lives in `media/models-manager/index.html` (static HTML);
+ * interactivity lives in `media/models-manager/models-manager-controller.js`,
+ * built on the shared kernel `media/js/webview-core.js`. The protocol
+ * between this file and the webview — message types, state shape, lifecycle —
+ * is documented at the top of that HTML file and enforced by
+ * `modelsIniHtml.test.ts`. The `WebviewState` / `WebviewMessage` types below
+ * are the single source of truth for the contract.
+ *
+ * Data flow (one direction at a time):
+ *   host → webview:  postMessage({ type: 'setState', state })   (full state, always)
+ *   webview → host:  postMessage(action)                        (see WebviewMessage)
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { MODEL_PRESETS, ModelPreset, getPresetById } from './presets';
 import {
 	ModelsIniManager,
@@ -13,6 +27,21 @@ import {
 	SUPPORTED_INI_VERSION,
 } from './modelsIniManager';
 import { SystemInfo, getCachedSystemInfo } from './deviceQuery';
+
+/** Path of the models manager webview HTML, relative to the extension root. */
+const WEBVIEW_HTML_RELATIVE_PATH = path.join('media', 'models-manager', 'index.html');
+
+/** Shared webview kernel (Stimulus-like), relative to the extension root. */
+const WEBVIEW_CORE_JS_RELATIVE_PATH = path.join('media', 'js', 'webview-core.js');
+
+/** Models manager controller, relative to the extension root. */
+const MODELS_MANAGER_CONTROLLER_JS_RELATIVE_PATH = path.join('media', 'models-manager', 'models-manager-controller.js');
+
+/**
+ * Placeholder in the HTML replaced with the two <script> tags (core first,
+ * controller second) pointing at webview-origin URIs.
+ */
+const WEBVIEW_SCRIPTS_PLACEHOLDER = '__LLAMA_WEBVIEW_SCRIPTS__';
 
 interface PresetViewState {
 	id: string;
@@ -46,6 +75,20 @@ type WebviewMessage =
 	| { type: 'openIni' }
 	| { type: 'ready' };
 
+/**
+ * All action `type` strings the host accepts (mirrors the WebviewMessage
+ * union minus 'ready', which is posted by webview-core.js).
+ * modelsIniHtml.test.ts uses this to verify the webview only posts known
+ * actions — keep in sync when adding a variant to WebviewMessage.
+ */
+export const MODELS_MANAGER_ACTION_TYPES = [
+	'toggleEnabled',
+	'toggleAutoupdate',
+	'upgrade',
+	'migrate',
+	'openIni',
+] as const;
+
 let currentPanel: vscode.WebviewPanel | undefined;
 
 export interface ModelsManagerUIOptions {
@@ -76,7 +119,11 @@ export async function openModelsManager(options: ModelsManagerUIOptions): Promis
 		}
 	);
 
-	currentPanel.webview.html = getWebviewHtml();
+	// The HTML is loaded from disk asynchronously. Any setState posted before
+	// the webview's scripts run is lost, but the webview sends
+	// { type: 'ready' } once booted and the host responds by re-sending the
+	// full current state (see the HTML file header).
+	void loadWebviewHtml(currentPanel, extensionUri);
 
 	currentPanel.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
 		const runMutation = async (fn: () => Promise<void>, notifyChanged: boolean) => {
@@ -205,307 +252,43 @@ async function updateWebviewState(
 	panel.webview.postMessage({ type: 'setState', state });
 }
 
-function getWebviewHtml(): string {
-	return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLaMA Models Manager</title>
-<style>
-	body {
-		font-family: var(--vscode-font-family);
-		font-size: var(--vscode-font-size);
-		color: var(--vscode-foreground);
-		background: var(--vscode-editor-background);
-		padding: 16px;
-		margin: 0;
-	}
-	h1 {
-		font-size: 1.4em;
-		margin-bottom: 16px;
-		font-weight: 600;
-	}
-	.preset-table {
-		width: 100%;
-		border-collapse: collapse;
-	}
-	.preset-table th {
-		text-align: left;
-		padding: 8px 12px;
-		border-bottom: 1px solid var(--vscode-widget-border);
-		font-weight: 600;
-		font-size: 0.85em;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--vscode-descriptionForeground);
-	}
-	.preset-table td {
-		padding: 8px 12px;
-		border-bottom: 1px solid var(--vscode-widget-border);
-		vertical-align: middle;
-	}
-	.preset-row.disabled {
-		opacity: 0.5;
-	}
-	.preset-row.deprecated td {
-		background: var(--vscode-inputValidation-warningBackground, rgba(255, 200, 0, 0.05));
-	}
-	.badge {
-		display: inline-block;
-		padding: 2px 6px;
-		border-radius: 3px;
-		font-size: 0.75em;
-		font-weight: 600;
-		margin-left: 8px;
-	}
-	.badge-deprecated {
-		background: var(--vscode-inputValidation-warningBackground);
-		color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
-		border: 1px solid var(--vscode-inputValidation-warningBorder);
-	}
-	.badge-warning {
-		color: var(--vscode-editorWarning-foreground);
-	}
-	.ram-info {
-		font-size: 0.85em;
-		color: var(--vscode-descriptionForeground);
-	}
-	button {
-		background: var(--vscode-button-background);
-		color: var(--vscode-button-foreground);
-		border: none;
-		padding: 4px 12px;
-		border-radius: 2px;
-		cursor: pointer;
-		font-size: 0.85em;
-	}
-	button:hover {
-		background: var(--vscode-button-hoverBackground);
-	}
-	button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.secondary-btn {
-		background: var(--vscode-button-secondaryBackground);
-		color: var(--vscode-button-secondaryForeground);
-	}
-	.secondary-btn:hover {
-		background: var(--vscode-button-secondaryHoverBackground);
-	}
-	input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		cursor: pointer;
-	}
-	input[type="checkbox"]:disabled {
-		cursor: not-allowed;
-	}
-	.user-section {
-		margin-top: 24px;
-		padding-top: 16px;
-		border-top: 1px solid var(--vscode-widget-border);
-	}
-	.user-section h2 {
-		font-size: 1.1em;
-		margin-bottom: 8px;
-	}
-	.user-model {
-		padding: 4px 0;
-		color: var(--vscode-descriptionForeground);
-	}
-	.footer {
-		margin-top: 16px;
-		padding-top: 12px;
-		border-top: 1px solid var(--vscode-widget-border);
-	}
-	.tooltip {
-		position: relative;
-		cursor: help;
-	}
-	.tooltip .tooltip-text {
-		visibility: hidden;
-		background: var(--vscode-editorHoverWidget-background);
-		color: var(--vscode-editorHoverWidget-foreground);
-		border: 1px solid var(--vscode-editorHoverWidget-border);
-		padding: 4px 8px;
-		border-radius: 3px;
-		position: absolute;
-		z-index: 100;
-		bottom: 125%;
-		left: 0;
-		white-space: nowrap;
-		font-size: 0.85em;
-	}
-	.tooltip:hover .tooltip-text {
-		visibility: visible;
-	}
-	.error-banner {
-		background: var(--vscode-inputValidation-errorBackground);
-		color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
-		border: 1px solid var(--vscode-inputValidation-errorBorder);
-		padding: 10px 12px;
-		border-radius: 3px;
-		margin-bottom: 16px;
-	}
-</style>
-</head>
-<body>
-<h1>LLaMA Models Manager</h1>
-<div id="content">Loading...</div>
-<script>
-(function() {
-	const vscode = acquireVsCodeApi();
-	let state = null;
+/**
+ * Assemble the models manager webview from media/models-manager/index.html,
+ * media/js/webview-core.js, and
+ * media/models-manager/models-manager-controller.js, and assign it to the
+ * panel.
+ *
+ * The HTML is a template: the `__LLAMA_WEBVIEW_SCRIPTS__` placeholder is
+ * replaced with two <script> tags pointing at webview-origin URIs (the VS
+ * Code CSP blocks remote content, so local files must be injected through
+ * asWebviewUri) — core FIRST (defines LlamaWebview), controller second
+ * (boots). The placeholder also occurs in the header documentation comments,
+ * so the replace is global.
+ */
+async function loadWebviewHtml(panel: vscode.WebviewPanel, extensionUri: vscode.Uri): Promise<void> {
+	try {
+		const htmlPath = vscode.Uri.joinPath(extensionUri, WEBVIEW_HTML_RELATIVE_PATH);
+		const template = await fs.readFile(htmlPath.fsPath, 'utf8');
 
-	window.addEventListener('message', event => {
-		const msg = event.data;
-		if (msg.type === 'setState') {
-			state = msg.state;
-			render();
-		}
-	});
+		const scriptTag = (relativePath: string): string => {
+			const uri = panel.webview
+				.asWebviewUri(vscode.Uri.joinPath(extensionUri, relativePath))
+				.toString();
+			return '<script src="' + uri + '"></script>';
+		};
+		const scripts =
+			scriptTag(WEBVIEW_CORE_JS_RELATIVE_PATH) +
+			scriptTag(MODELS_MANAGER_CONTROLLER_JS_RELATIVE_PATH);
 
-	function render() {
-		if (!state) return;
-		const container = document.getElementById('content');
-		let html = '';
-		const readOnly = !!state.iniFormatError;
-
-		if (state.iniFormatError) {
-			html += '<div class="error-banner">This models.ini uses format version ' +
-				state.iniFormatError.fileVersion +
-				', but LLaMA Copilot only supports version ' +
-				state.iniFormatError.supportedVersion +
-				'. Update the extension, or edit the file manually.</div>';
-		}
-
-		html += '<table class="preset-table">';
-		html += '<thead><tr><th>Enabled</th><th>Model</th><th>RAM</th><th>Auto-update</th><th></th></tr></thead>';
-		html += '<tbody>';
-
-		for (const preset of state.presets) {
-			const rowClass = [
-				'preset-row',
-				preset.exceedsRam ? 'disabled' : '',
-				preset.deprecated ? 'deprecated' : '',
-			].filter(Boolean).join(' ');
-
-			html += '<tr class="' + rowClass + '">';
-
-			// Enabled checkbox
-			html += '<td>';
-			if (preset.deprecated && preset.enabled) {
-				html += '<input type="checkbox" checked disabled title="Deprecated — use the migrate button">';
-			} else {
-				html += '<input type="checkbox"' +
-					(preset.enabled ? ' checked' : '') +
-					(readOnly || preset.exceedsRam ? ' disabled' : '') +
-					(preset.exceedsRam ? ' title="Exceeds available system RAM"' : '') +
-					(readOnly ? ' title="models.ini format version is unsupported"' : '') +
-					' onchange="toggleEnabled(\\'' + preset.id + '\\', this.checked)">';
-			}
-			html += '</td>';
-
-			// Name + badges
-			html += '<td>';
-			html += escapeHtml(preset.displayName);
-			if (preset.deprecated) {
-				html += ' <span class="badge badge-deprecated">Deprecated</span>';
-			}
-			if (preset.exceedsVram && !preset.exceedsRam) {
-				html += ' <span class="badge badge-warning tooltip">⚠️ VRAM<span class="tooltip-text">Model exceeds GPU VRAM. Will use CPU offloading (slower).</span></span>';
-			}
-			html += '</td>';
-
-			// RAM info
-			html += '<td class="ram-info">';
-			html += formatRam(preset.minRamMB);
-			if (preset.exceedsRam) {
-				html += ' <span class="tooltip">❌<span class="tooltip-text">Requires more RAM than available (system RAM minus 8GB headroom)</span></span>';
-			}
-			html += '</td>';
-
-			// Autoupdate checkbox
-			html += '<td>';
-			html += '<input type="checkbox"' +
-				(preset.autoupdate ? ' checked' : '') +
-				(readOnly || !preset.enabled ? ' disabled' : '') +
-				' onchange="toggleAutoupdate(\\'' + preset.id + '\\', this.checked)">';
-			html += '</td>';
-
-			// Action button
-			html += '<td>';
-			if (preset.deprecated && preset.enabled && preset.successorName) {
-				html += '<button' + (readOnly ? ' disabled' : '') +
-					' onclick="migrate(\\'' + preset.id + '\\')">Change to ' + escapeHtml(preset.successorName) + '</button>';
-			} else if (preset.hasUpdate) {
-				html += '<button class="secondary-btn"' + (readOnly ? ' disabled' : '') +
-					' onclick="upgrade(\\'' + preset.id + '\\')">Upgrade</button>';
-			}
-			html += '</td>';
-
-			html += '</tr>';
-		}
-
-		html += '</tbody></table>';
-
-		// User sections
-		if (state.userSections.length > 0) {
-			html += '<div class="user-section">';
-			html += '<h2>User-Added Models</h2>';
-			for (const name of state.userSections) {
-				html += '<div class="user-model">[' + escapeHtml(name) + ']</div>';
-			}
-			html += '</div>';
-		}
-
-		// Footer
-		html += '<div class="footer">';
-		html += '<button class="secondary-btn" onclick="openIni()">Edit models.ini</button>';
-		if (state.systemRamMB > 0) {
-			html += ' <span class="ram-info">System RAM: ' + formatRam(state.systemRamMB) + '</span>';
-		}
-		if (state.totalVramMB > 0) {
-			html += ' <span class="ram-info"> | VRAM: ' + formatRam(state.totalVramMB) + '</span>';
-		}
-		html += '</div>';
-
-		container.innerHTML = html;
+		panel.webview.html = template
+			.replace(new RegExp(WEBVIEW_SCRIPTS_PLACEHOLDER, 'g'), scripts);
+	} catch (err) {
+		// The HTML ships with the extension; a read failure means a broken
+		// install. Show a minimal error instead of a blank panel.
+		const msg = err instanceof Error ? err.message : String(err);
+		panel.webview.html =
+			'<!DOCTYPE html><html><body style="font-family: var(--vscode-font-family); padding: 24px;">' +
+			'<h1>LLaMA Models Manager</h1>' +
+			'<p>Failed to load the models manager UI: ' + msg.replace(/[&<>]/g, '') + '</p></body></html>';
 	}
-
-	function formatRam(mb) {
-		if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
-		return mb + ' MB';
-	}
-
-	function escapeHtml(text) {
-		const div = document.createElement('div');
-		div.textContent = text;
-		return div.innerHTML;
-	}
-
-	window.toggleEnabled = function(presetId, enabled) {
-		vscode.postMessage({ type: 'toggleEnabled', presetId, enabled });
-	};
-	window.toggleAutoupdate = function(presetId, autoupdate) {
-		vscode.postMessage({ type: 'toggleAutoupdate', presetId, autoupdate });
-	};
-	window.upgrade = function(presetId) {
-		vscode.postMessage({ type: 'upgrade', presetId });
-	};
-	window.migrate = function(presetId) {
-		vscode.postMessage({ type: 'migrate', presetId });
-	};
-	window.openIni = function() {
-		vscode.postMessage({ type: 'openIni' });
-	};
-
-	// Signal ready
-	vscode.postMessage({ type: 'ready' });
-})();
-</script>
-</body>
-</html>`;
 }
