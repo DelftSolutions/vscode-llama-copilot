@@ -3,14 +3,16 @@ import { streamChatCompletion, getTokenCount, prepareCompletionRequest } from '.
 import { EndpointsConfig, OpenAIUsage } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
-import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
+import { logRulesMatching, logToolCall, logToolCallResult, logLoopDetection } from './logger';
 import {
 	getRequestTimeoutMs,
 	getPromptProgressStatusBarThresholdSeconds,
 	getMinPromptProgressElapsedMs,
 	isCursorRulesEnabled as isCursorRulesEnabledConfig,
 	isShowAllModels,
+	isToolLoopDetectionEnabled,
 } from './config';
+import { processLoopDetection } from './toolLoopDetector';
 import { estimatePromptProgress, formatRemaining } from './promptProgressEstimate';
 import {
 	parseModelId,
@@ -25,7 +27,6 @@ import {
 	extractReasoningFromAssistantMessage,
 } from './thinkingParts';
 import { ThinkingTokensTracker } from './thinkingTokens';
-import { queueToolResultEmailsForMessages } from './toolResultEmail';
 
 const USAGE_MIME_TYPE = 'usage';
 
@@ -61,7 +62,6 @@ export function extractTextFromRequestMessage(msg: vscode.LanguageModelChatReque
 
 export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvider {
 	private endpoints: EndpointsConfig;
-	private readonly smtpGlobalState: vscode.Memento | undefined;
 	// Event emitter for model information changes
 	private readonly onDidChangeLanguageModelChatInformationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this.onDidChangeLanguageModelChatInformationEmitter.event;
@@ -73,9 +73,8 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	// Fallback reasoning tracker — delete when VS Code round-trips LanguageModelThinkingPart reliably
 	private readonly thinkingTokensTracker = new ThinkingTokensTracker();
 
-	constructor(endpoints: EndpointsConfig, smtpGlobalState?: vscode.Memento) {
+	constructor(endpoints: EndpointsConfig) {
 		this.endpoints = endpoints;
-		this.smtpGlobalState = smtpGlobalState;
 		this.rulesLoadingPromise = this.initializeRules();
 	}
 
@@ -351,11 +350,30 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			abortController.signal
 		);
 
+		// --- Loop detection for follow-up path ---
+		let followUpTools = tools;
+		let followUpMessages = preparedRequest.openAIMessages;
+		if (isToolLoopDetectionEnabled()) {
+			const loopResult = processLoopDetection(preparedRequest.openAIMessages);
+			followUpMessages = loopResult.messages;
+			if (loopResult.lastDetection) {
+				if (loopResult.lastDetection.toolsToFilter.length > 0) {
+					followUpTools = tools.filter(
+						t => !loopResult.lastDetection!.toolsToFilter.includes(t.name)
+					);
+				}
+				logLoopDetection(loopResult.lastDetection);
+			}
+		}
+
 		const completionOptions = {
-			tools: tools,
+			tools: followUpTools,
 			max_tokens: modelLimits.maxOutputTokens,
 			isNewUserMessage: false,
-			preparedRequest,
+			preparedRequest: {
+				...preparedRequest,
+				openAIMessages: followUpMessages,
+			},
 			thinkingBudgetFraction,
 		};
 
@@ -454,8 +472,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			statusBarRef.disposable = undefined;
 		};
 		try {
-			queueToolResultEmailsForMessages(messages, this.smtpGlobalState);
-
 			// Parse model ID to extract endpoint identifier
 			const { baseModelId, endpointId } = parseModelId(model.id);
 			if (!endpointId) {
@@ -508,13 +524,32 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				abortController.signal
 			);
 
+			// --- Loop detection (runs on every request when enabled) ---
+			let effectiveTools: readonly vscode.LanguageModelChatTool[] = tools;
+			let prunedMessages = preparedRequest.openAIMessages;
+			if (isToolLoopDetectionEnabled()) {
+				const loopResult = processLoopDetection(preparedRequest.openAIMessages);
+				prunedMessages = loopResult.messages;
+				if (loopResult.lastDetection) {
+					if (loopResult.lastDetection.toolsToFilter.length > 0) {
+						effectiveTools = tools.filter(
+							t => !loopResult.lastDetection!.toolsToFilter.includes(t.name)
+						);
+					}
+					logLoopDetection(loopResult.lastDetection);
+				}
+			}
+
 			const completionOptions = {
-				tools: tools,
+				tools: effectiveTools,
 				max_tokens: maxTokens,
 				toolMode: options.toolMode,
 				modelOptions: options.modelOptions,
 				isNewUserMessage: isNewUserMsg,
-				preparedRequest,
+				preparedRequest: {
+					...preparedRequest,
+					openAIMessages: prunedMessages,
+				},
 				thinkingBudgetFraction,
 			};
 

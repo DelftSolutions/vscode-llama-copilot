@@ -127,6 +127,28 @@ export function calculateMaxOutputTokens(contextSize: number): number {
 	return Math.max(MAX_OUTPUT_TOKENS_MIN, Math.min(MAX_OUTPUT_TOKENS_MAX, maxOutput));
 }
 
+/**
+ * Resolve the effective context size used for requests.
+ * Configured and default sizes are absolute (not divided by --parallel).
+ * Only server-reported size is divided by --parallel when present.
+ */
+export function resolveEffectiveContextSize(
+	configuredContextSize: number | undefined,
+	extractedContextSize: number | null,
+	parallel: number | null
+): number {
+	if (configuredContextSize != null) {
+		return configuredContextSize;
+	}
+	if (extractedContextSize == null) {
+		return DEFAULT_CONTEXT_SIZE;
+	}
+	if (parallel != null && parallel > 0) {
+		return Math.floor(extractedContextSize / parallel);
+	}
+	return extractedContextSize;
+}
+
 /** Check if model is suitable for chat (not embeddings-only). */
 export function isChatCapable(model: Model): boolean {
 	return !hasEmbeddings(model);
@@ -207,13 +229,11 @@ export async function provideLanguageModelChatInformation(
 			for (const model of chatModels) {
 				foundModelIds.add(model.id);
 				const modelConfig = endpointConfig.models?.[model.id];
-				const extractedContextSize = extractContextSize(model);
-				let effectiveContextSize =
-					modelConfig?.contextSize ?? extractedContextSize ?? DEFAULT_CONTEXT_SIZE;
-				const parallel = extractParallel(model);
-				if (parallel != null && parallel > 0) {
-					effectiveContextSize = Math.floor(effectiveContextSize / parallel);
-				}
+				const effectiveContextSize = resolveEffectiveContextSize(
+					modelConfig?.contextSize,
+					extractContextSize(model),
+					extractParallel(model)
+				);
 				const maxOutputTokens =
 					modelConfig?.maxOutputTokens ?? calculateMaxOutputTokens(effectiveContextSize);
 				const maxInputTokens = Math.max(1, effectiveContextSize - maxOutputTokens);

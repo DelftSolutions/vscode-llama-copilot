@@ -1,4 +1,7 @@
 docs/
 #dev-docs/
 examples/
+src/
 .gitignore
+vitest.config.*
+tsconfig.json

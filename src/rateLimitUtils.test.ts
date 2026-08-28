@@ -55,6 +55,15 @@ describe('isRateLimitResponse', () => {
 		expect(isRateLimitResponse(200, { message: 'x', type: 'rate_limit_error' })).toBe(true);
 	});
 
+	it('returns true for status 503', () => {
+		expect(isRateLimitResponse(503)).toBe(true);
+		expect(isRateLimitResponse(503, null)).toBe(true);
+	});
+
+	it('returns true for unavailable_error type', () => {
+		expect(isRateLimitResponse(200, { message: 'Loading model', type: 'unavailable_error' })).toBe(true);
+	});
+
 	it('returns false for other statuses and types', () => {
 		expect(isRateLimitResponse(500)).toBe(false);
 		expect(isRateLimitResponse(400, { message: 'x', type: 'invalid_request_error' })).toBe(false);

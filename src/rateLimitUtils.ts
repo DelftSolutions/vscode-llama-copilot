@@ -32,10 +32,15 @@ export function parseRetryAfterMs(header: string | null): number | undefined {
 }
 
 /**
- * True when the HTTP response indicates rate limiting (status 429 or error type rate_limit_error).
+ * True when the HTTP response should be retried with backoff (rate limit or server still loading).
  */
 export function isRateLimitResponse(status: number, parsed?: ParsedServerError | null): boolean {
-	return status === 429 || parsed?.type === 'rate_limit_error';
+	return (
+		status === 429 ||
+		status === 503 ||
+		parsed?.type === 'rate_limit_error' ||
+		parsed?.type === 'unavailable_error'
+	);
 }
 
 /**
