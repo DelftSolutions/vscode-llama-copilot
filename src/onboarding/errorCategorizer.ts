@@ -105,12 +105,15 @@ export function classifySetupError(error: unknown): ClassifiedSetupError {
 	if (httpMatch) {
 		const status = Number(httpMatch[1]);
 		if (status === 404) {
+			const urlMatch = message.match(/(https?:\/\/\S+)/);
 			return {
 				kind: 'http',
 				title: 'Release not found on GitHub',
 				detail:
-					'The requested llama-server release could not be found (it may have just moved). ' +
-					'Try again in a few minutes.',
+					'The requested llama-server file does not exist on GitHub -- this is not transient, so retrying alone will not help. ' +
+					(urlMatch ? `Attempted URL: ${urlMatch[1]}. ` : '') +
+					'If you are behind a proxy or firewall, make sure it can reach github.com. ' +
+					'Full details are in the "Llama Server API" output channel.',
 				retryable: true,
 			};
 		}
@@ -149,7 +152,7 @@ export function classifySetupError(error: unknown): ClassifiedSetupError {
 		};
 	}
 
-	if (/fetch failed|Failed to fetch|network error/i.test(message)) {
+	if (/fetch failed|Failed to fetch|network error|Download stalled/i.test(message)) {
 		return {
 			kind: 'network',
 			title: 'Network problem',

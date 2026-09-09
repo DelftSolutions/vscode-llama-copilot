@@ -40,6 +40,13 @@ describe('classifySetupError', () => {
 			const result = classifySetupError(new Error('Network error: could not reach GitHub'));
 			expect(result.kind).toBe('network');
 		});
+
+		it('classifies download-stalled errors as network', () => {
+			const result = classifySetupError(
+				new Error('Download stalled: no data received for 60s. Check your internet connection, proxy, or firewall.')
+			);
+			expect(result.kind).toBe('network');
+		});
 	});
 
 	describe('disk', () => {
@@ -68,6 +75,14 @@ describe('classifySetupError', () => {
 			const result = classifySetupError(new Error('Download failed: HTTP 404 for https://github.com/...'));
 			expect(result.kind).toBe('http');
 			expect(result.title).toContain('not found');
+		});
+
+		it('includes the attempted URL in the 404 detail and drops the transient hint', () => {
+			const url = 'https://github.com/ggml-org/llama.cpp/releases/download/bv0.4.0/llama-bv0.4.0-bin-macos-arm64.tar.gz';
+			const result = classifySetupError(new Error(`Download failed: HTTP 404 for ${url}`));
+			expect(result.kind).toBe('http');
+			expect(result.detail).toContain(url);
+			expect(result.detail).not.toContain('may have just moved');
 		});
 
 		it('classifies HTTP 429 as rate limit', () => {

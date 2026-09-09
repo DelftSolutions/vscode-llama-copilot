@@ -13,7 +13,17 @@ import { getPlatformAsset, getAssetFilename, getServerBinaryName, getCliBinaryNa
 const execFileAsync = promisify(execFile);
 
 const GITHUB_API_BASE = 'https://api.github.com/repos/ggml-org/llama.cpp/releases';
+const GITHUB_RELEASE_DOWNLOAD_BASE = 'https://github.com/ggml-org/llama.cpp/releases';
 const USER_AGENT = 'DelftSolutions-llama-copilot (https://github.com/DelftSolutions/vscode-llama-copilot)';
+
+/** Timeout (ms) for GitHub requests made while resolving the release. */
+const RELEASE_LOOKUP_TIMEOUT_MS = 15_000;
+
+/** Header timeout (ms) for the binary download: how long to wait for the server to start responding. */
+const DEFAULT_DOWNLOAD_HEADER_TIMEOUT_MS = 20_000;
+
+/** Stall timeout (ms) for the binary download: abort if no data arrives while streaming the body. */
+const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
 
 export interface BinaryManagerOptions {
 	globalStorageUri: vscode.Uri;
@@ -95,24 +105,73 @@ export class BinaryManager {
 	}
 
 	/**
-	 * Fetch the latest release version (build number) from GitHub.
-	 * Returns the tag name (e.g. 'b5000') or null on failure.
+	 * Fetch the latest nightly build version (build number) from GitHub.
+	 *
+	 * llama.cpp's latest *stable* release (e.g. v0.4.0) ships no binaries --
+	 * its only asset is a small `nightly-tag.txt` containing the current
+	 * nightly tag (e.g. `b10809`). The binaries live in the `bNNNN` nightly
+	 * (prerelease) releases, so we resolve that build number here.
+	 *
+	 * Returns e.g. '10809', or null if it cannot be determined.
 	 */
 	async latestVersion(): Promise<string | null> {
 		try {
-			const response = await fetch(`${GITHUB_API_BASE}/latest`, {
+			// Primary: the latest release's nightly-tag.txt pointer.
+			const fromTagFile = await this.fetchNightlyTag();
+			if (fromTagFile) return fromTagFile;
+
+			// Fallback: newest build that actually has our platform's asset
+			// (nightly tags are published before asset uploads finish).
+			return await this.findLatestBuildWithAsset();
+		} catch {
+			return null;
+		}
+	}
+
+	/** Read the current nightly tag from the latest release's `nightly-tag.txt`. */
+	private async fetchNightlyTag(): Promise<string | null> {
+		const url = `${GITHUB_RELEASE_DOWNLOAD_BASE}/latest/download/nightly-tag.txt`;
+		try {
+			const response = await fetch(url, {
+				headers: { 'User-Agent': USER_AGENT },
+				signal: AbortSignal.timeout(RELEASE_LOOKUP_TIMEOUT_MS),
+			});
+			if (!response.ok) return null;
+			const body = await response.text();
+			const match = body.match(/b(\d+)/);
+			return match ? match[1] : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Scan recent releases for the newest `bNNNN` build with this platform's asset. */
+	private async findLatestBuildWithAsset(): Promise<string | null> {
+		try {
+			const response = await fetch(`${GITHUB_API_BASE}?per_page=20`, {
 				headers: {
 					'User-Agent': USER_AGENT,
 					'Accept': 'application/vnd.github.v3+json',
 				},
+				signal: AbortSignal.timeout(RELEASE_LOOKUP_TIMEOUT_MS),
 			});
 			if (!response.ok) return null;
-			const data = await response.json() as { tag_name?: string };
-			const tag = data.tag_name;
-			if (!tag) return null;
-			// Tags are like 'b5000' -- strip the 'b' prefix for our version string
-			return tag.startsWith('b') ? tag.slice(1) : tag;
+			const releases = (await response.json()) as Array<{
+				tag_name?: string;
+				assets?: Array<{ name?: string }>;
+			}>;
+			for (const release of releases) {
+				const match = /^b(\d+)$/.exec(release.tag_name ?? '');
+				if (!match) continue;
+				const buildNumber = match[1];
+				const expectedAsset = getAssetFilename(buildNumber);
+				if ((release.assets ?? []).some(a => a.name === expectedAsset)) {
+					return buildNumber;
+				}
+			}
+			return null;
 		} catch {
+			// Includes unsupported platforms (getAssetFilename throws).
 			return null;
 		}
 	}
@@ -221,45 +280,10 @@ export class BinaryManager {
 		const archivePath = path.join(this.binDir, filename);
 
 		try {
-			// Download the archive
-			const response = await fetch(downloadUrl, {
-				headers: { 'User-Agent': USER_AGENT },
-			});
-
-			if (!response.ok) {
-				throw new Error(`Download failed: HTTP ${response.status} for ${downloadUrl}`);
-			}
-
-			const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
-			const reader = response.body?.getReader();
-			if (!reader) throw new Error('No response body');
-
-			const chunks: Uint8Array[] = [];
-			let downloaded = 0;
-			let lastPercent = 0;
-
-			while (true) {
-				if (opts.token?.isCancellationRequested) {
-					reader.cancel();
-					throw new Error('Download cancelled');
-				}
-
-				const { done, value } = await reader.read();
-				if (done) break;
-				chunks.push(value);
-				downloaded += value.length;
-
-				if (contentLength > 0 && opts.onProgress) {
-					const percent = Math.floor((downloaded / contentLength) * 100);
-					if (percent > lastPercent) {
-						lastPercent = percent;
-						opts.onProgress(percent);
-					}
-				}
-			}
+			// Download the archive (with header/stall watchdogs)
+			const buffer = await downloadBuffer(downloadUrl, opts);
 
 			// Write to file
-			const buffer = Buffer.concat(chunks);
 			await fs.writeFile(archivePath, buffer);
 
 			// Extract
@@ -395,4 +419,125 @@ export class BinaryManager {
 		await fs.mkdir(path.dirname(this.stateFilePath), { recursive: true });
 		await fs.writeFile(this.stateFilePath, JSON.stringify(state, null, '\t'));
 	}
+}
+
+export interface DownloadBufferOptions {
+	/** Cancellation token (checked between chunks). */
+	token?: vscode.CancellationToken;
+	/** Reports integer percents (0-100) as chunks arrive (only when content-length is known). */
+	onProgress?: (percent: number) => void;
+	/** Override the header timeout (mostly for tests). */
+	headerTimeoutMs?: number;
+	/** Override the body-stall timeout (mostly for tests). */
+	stallTimeoutMs?: number;
+}
+
+/**
+ * Download a URL into memory with two watchdogs:
+ * - header timeout: aborts when the server never responds;
+ * - stall watchdog: aborts when the connection stops delivering data.
+ * Without these a hung network leaves callers (e.g. the onboarding wizard)
+ * waiting forever with no error.
+ */
+export async function downloadBuffer(downloadUrl: string, opts: DownloadBufferOptions = {}): Promise<Buffer> {
+	const headerTimeoutMs = opts.headerTimeoutMs ?? DEFAULT_DOWNLOAD_HEADER_TIMEOUT_MS;
+	const stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS;
+
+	const stallError = () => new Error(
+		`Download stalled: no data received for ${stallTimeoutMs / 1000}s. ` +
+		'Check your internet connection, proxy, or firewall.'
+	);
+
+	const controller = new AbortController();
+	let abortReason: 'no-response' | 'stalled' | null = null;
+
+	// Header timeout: the server never even starts responding.
+	const headerTimer = setTimeout(() => {
+		abortReason = 'no-response';
+		controller.abort();
+	}, headerTimeoutMs);
+
+	let response: Response;
+	try {
+		response = await fetch(downloadUrl, {
+			headers: { 'User-Agent': USER_AGENT },
+			signal: controller.signal,
+		});
+	} catch (e) {
+		if (abortReason === 'no-response') {
+			throw new Error(
+				`Download stalled: GitHub did not respond within ${headerTimeoutMs / 1000}s. ` +
+				'Check your internet connection, proxy, or firewall.'
+			);
+		}
+		throw e;
+	} finally {
+		clearTimeout(headerTimer);
+	}
+
+	if (!response.ok) {
+		throw new Error(`Download failed: HTTP ${response.status} for ${downloadUrl}`);
+	}
+
+	const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
+	const reader = response.body?.getReader();
+	if (!reader) throw new Error('No response body');
+
+	const chunks: Uint8Array[] = [];
+	let downloaded = 0;
+	let lastPercent = 0;
+
+	// Stall watchdog: abort if no data arrives for stallTimeoutMs.
+	let stallTimer: ReturnType<typeof setTimeout> | undefined;
+	const resetStallTimer = () => {
+		if (stallTimer) clearTimeout(stallTimer);
+		stallTimer = setTimeout(() => {
+			abortReason = 'stalled';
+			controller.abort();
+			// Also cancel the body so a pending read() settles (real fetch rejects
+			// it; the abortReason check below covers both outcomes).
+			reader.cancel().catch(() => { /* ignore */ });
+		}, stallTimeoutMs);
+	};
+	resetStallTimer();
+
+	try {
+		while (true) {
+			if (opts.token?.isCancellationRequested) {
+				await reader.cancel();
+				throw new Error('Download cancelled');
+			}
+
+			let readResult: { done: boolean; value?: Uint8Array };
+			try {
+				readResult = await reader.read();
+			} catch (e) {
+				if (abortReason === 'stalled') {
+					throw stallError();
+				}
+				throw e;
+			}
+			// A cancelled body may resolve the pending read as "done" --
+			// check the watchdog flag before trusting the result.
+			if (abortReason === 'stalled') {
+				throw stallError();
+			}
+			if (readResult.done || !readResult.value) break;
+			chunks.push(readResult.value);
+			downloaded += readResult.value.length;
+			resetStallTimer();
+
+			if (contentLength > 0 && opts.onProgress) {
+				const percent = Math.floor((downloaded / contentLength) * 100);
+				if (percent > lastPercent) {
+					lastPercent = percent;
+					opts.onProgress(percent);
+				}
+			}
+		}
+	} finally {
+		if (stallTimer) clearTimeout(stallTimer);
+	}
+
+	return Buffer.concat(chunks);
 }

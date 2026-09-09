@@ -4,8 +4,11 @@
  *
  * - State is persisted in globalState, so the wizard resumes where the user
  *   left off on the next launch.
- * - `llamaCopilot.server.managed` is written to true ONLY when the managed
- *   path completes .
+ * - `llamaCopilot.server.managed` is written to true as soon as the user
+ *   picks the managed mode on screen 1, so managed commands and the
+ *   auto-start on the next launch work even if the binary/model setup is
+ *   interrupted later. The completion path re-writes it as a fallback, and
+ *   choosing Advanced/Skip afterwards reverts it if this session set it.
  * - Upgrading users with an already-working setup are silently marked done
  *   and never see the wizard.
  */
@@ -83,6 +86,10 @@ export class OnboardingOrchestrator {
 	private completed = false;
 	private serverStateSub: vscode.Disposable | undefined;
 	private disposed = false;
+	/** Value of `server.managed` when the current wizard session started. */
+	private managedEnabledAtSessionStart = false;
+	/** True when this session wrote `server.managed` to true (screen 1). */
+	private managedEnabledBySession = false;
 
 	constructor(private readonly deps: OnboardingDeps) {
 		this.panel = new OnboardingWizardPanel(deps.extensionUri, action => {
@@ -102,6 +109,9 @@ export class OnboardingOrchestrator {
 	 */
 	async maybeAutoRun(): Promise<AutoRunOutcome> {
 		if (!isSupportedPlatform()) return 'normal';
+
+		this.managedEnabledAtSessionStart = this.deps.isManaged();
+		this.managedEnabledBySession = false;
 
 		const stored = await loadOnboardingState(this.deps.globalState);
 		this.data = stored ?? freshOnboardingData('mode');
@@ -141,6 +151,8 @@ export class OnboardingOrchestrator {
 			this.showPlatformUnsupported();
 			return;
 		}
+		this.managedEnabledAtSessionStart = this.deps.isManaged();
+		this.managedEnabledBySession = false;
 		const presetId = this.data.presetId;
 		this.data = freshOnboardingData('mode');
 		if (presetId) this.data.presetId = presetId;
@@ -151,16 +163,20 @@ export class OnboardingOrchestrator {
 
 	/**
 	 * Called when the user toggles server.managed from false to true
-	 * mid-session. No-ops when onboarding already completed (the normal
-	 * managed flow handles it).
+	 * mid-session. No-ops whenever onboarding state already exists: an
+	 * in-progress wizard is already driving the setup (this also covers the
+	 * toggle caused by the wizard's own screen-1 write of the flag), and a
+	 * done/skipped state is handled by the normal managed flow.
 	 */
 	async runForManaged(): Promise<void> {
 		if (!isSupportedPlatform()) {
 			this.showPlatformUnsupported();
 			return;
 		}
+		this.managedEnabledAtSessionStart = this.deps.isManaged();
+		this.managedEnabledBySession = false;
 		const stored = await loadOnboardingState(this.deps.globalState);
-		if (stored && stored.status !== 'in_progress') return;
+		if (stored) return;
 
 		// Binary already installed? Skip straight to the model picker.
 		let binaryReady = false;
@@ -174,7 +190,6 @@ export class OnboardingOrchestrator {
 		const step: OnboardingStep = binaryReady ? 'model' : 'downloading';
 		this.data = freshOnboardingData(step);
 		this.data.mode = 'managed';
-		if (stored?.presetId) this.data.presetId = stored.presetId;
 		await this.persist();
 		this.completed = false;
 		this.openAtStep(step);
@@ -438,21 +453,16 @@ export class OnboardingOrchestrator {
 		this.serverStateSub?.dispose();
 		this.serverStateSub = undefined;
 
-		// Persist 'done' BEFORE writing server.managed=true: the config change
-		// listener reacts to that write, and must see the completed onboarding
-		// state (not re-open the wizard via runForManaged).
+		// Persist 'done' first: if the fallback write below fires the config
+		// listener, it must see the completed onboarding state.
 		this.data.status = 'done';
 		await this.persist();
 
-		// Per spec: `server.managed` is written only when the managed path completes.
+		// Fallback: `server.managed` is normally written on screen 1 when the
+		// user picks managed mode. Re-write it in case that earlier write
+		// failed, so the server still auto-starts on the next launch.
 		if (this.data.mode === 'managed') {
-			try {
-				await vscode.workspace
-					.getConfiguration(CONFIG_SECTION)
-					.update('server.managed', true, vscode.ConfigurationTarget.Global);
-			} catch {
-				// Non-fatal — the server is already running.
-			}
+			void this.enableManagedSetting();
 		}
 
 		this.statusBar.hide();
@@ -489,7 +499,16 @@ export class OnboardingOrchestrator {
 				if (this.state.step !== 'mode' || !this.state.selectedMode) return;
 				if (this.state.selectedMode === 'managed') {
 					this.data.mode = 'managed';
+					// Persist BEFORE flipping the setting: the extension's config
+					// listener reacts to the write below and must see the
+					// in-progress state.
 					await this.persist();
+					// Unlock the rest of the extension (managed commands, server
+					// auto-start on the next launch) the moment the user commits
+					// to the managed path — not only when the wizard completes.
+					if (await this.enableManagedSetting()) {
+						this.managedEnabledBySession = true;
+					}
 					this.updateState({ step: 'downloading', downloadPercent: null, downloadError: null });
 					void this.startDownload();
 				} else if (this.state.selectedMode === 'advanced') {
@@ -550,17 +569,19 @@ export class OnboardingOrchestrator {
 		// available via the command palette ("Llama Copilot: Run Setup").
 		this.data.status = 'skipped';
 		await this.persist();
+		await this.revertManagedSettingIfWeEnabledIt();
 		this.statusBar.hide();
 		this.panel.dispose();
 	}
 
 	private async finishAdvanced(): Promise<void> {
 		// "I'll bring my own server": open the endpoint settings.
-		// server.managed stays false (the default) — nothing to write.
+		// server.managed stays off unless the user enabled it themselves.
 		await vscode.commands.executeCommand('workbench.action.openSettings', 'llamaCopilot.endpoints');
 		this.data.status = 'done';
 		this.data.mode = 'advanced';
 		await this.persist();
+		await this.revertManagedSettingIfWeEnabledIt();
 		this.statusBar.hide();
 		this.panel.dispose();
 	}
@@ -600,6 +621,43 @@ export class OnboardingOrchestrator {
 			// Fall through — show the wizard rather than failing silently.
 		}
 		return false;
+	}
+
+	/**
+	 * Write `llamaCopilot.server.managed = true` (global). Called the moment
+	 * the user commits to the managed path on screen 1, so the rest of the
+	 * extension (managed commands, server auto-start on the next launch) is
+	 * unlocked even if the binary/model setup is interrupted later.
+	 * Returns false when the write failed (non-fatal — the wizard drives the
+	 * setup regardless of the flag).
+	 */
+	private async enableManagedSetting(): Promise<boolean> {
+		try {
+			await vscode.workspace
+				.getConfiguration(CONFIG_SECTION)
+				.update('server.managed', true, vscode.ConfigurationTarget.Global);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Revert `server.managed` to false — only when this session set it (the
+	 * user started on the managed card, then went Back and chose Advanced or
+	 * Skip). A flag the user enabled before the wizard started is left
+	 * untouched.
+	 */
+	private async revertManagedSettingIfWeEnabledIt(): Promise<void> {
+		if (!this.managedEnabledBySession || this.managedEnabledAtSessionStart) return;
+		this.managedEnabledBySession = false;
+		try {
+			await vscode.workspace
+				.getConfiguration(CONFIG_SECTION)
+				.update('server.managed', false, vscode.ConfigurationTarget.Global);
+		} catch {
+			// Non-fatal.
+		}
 	}
 
 	private async persist(): Promise<void> {
