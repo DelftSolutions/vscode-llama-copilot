@@ -33,14 +33,22 @@ const WEBVIEW_CORE_JS_RELATIVE_PATH = path.join('media', 'js', 'webview-core.js'
 /** Wizard controller, relative to the extension root. */
 const WIZARD_CONTROLLER_JS_RELATIVE_PATH = path.join('media', 'onboarding', 'wizard-controller.js');
 
-/** Placeholder in the HTML replaced with the webview URI of the llama icon. */
+/** Generated Tailwind CSS for the onboarding wizard, relative to the extension root. */
+const TAILWIND_CSS_RELATIVE_PATH = path.join('media', 'onboarding', 'tailwind.css');
+
+/** Placeholder in the HTML replaced with the webview URI of the llama icon (light theme). */
 const ICON_URL_PLACEHOLDER = '__LLAMA_ONBOARDING_ICON_URL__';
+/** Placeholder in the HTML replaced with the webview URI of the llama icon (dark theme). */
+const ICON_URL_DARK_PLACEHOLDER = '__LLAMA_ONBOARDING_ICON_URL_DARK__';
 
 /**
  * Placeholder in the HTML replaced with the two <script> tags (core first,
  * controller second) pointing at webview-origin URIs.
  */
 const WEBVIEW_SCRIPTS_PLACEHOLDER = '__LLAMA_WEBVIEW_SCRIPTS__';
+
+/** Placeholder in the HTML <style> block replaced with the generated Tailwind CSS. */
+const TAILWIND_CSS_PLACEHOLDER = '__LLAMA_TAILWIND_CSS__';
 
 /** The screen currently shown in the wizard. */
 export type WizardStep = 'mode' | 'downloading' | 'model' | 'starting' | 'done';
@@ -141,7 +149,7 @@ export class OnboardingWizardPanel {
 	constructor(
 		private readonly extensionUri: vscode.Uri,
 		private readonly onAction: (action: WizardAction) => void
-	) {}
+	) { }
 
 	/** Create the panel if needed, otherwise bring it to front. */
 	reveal(): void {
@@ -152,7 +160,7 @@ export class OnboardingWizardPanel {
 
 		this.panel = vscode.window.createWebviewPanel(
 			'llamaCopilot.onboarding',
-			'LLaMA Copilot Setup',
+			'Llama Copilot Setup',
 			vscode.ViewColumn.One,
 			{
 				enableScripts: true,
@@ -192,9 +200,11 @@ export class OnboardingWizardPanel {
 	 * The HTML is a template: the `__LLAMA_WEBVIEW_SCRIPTS__` placeholder is
 	 * replaced with two <script> tags pointing at webview-origin URIs (the
 	 * VS Code CSP blocks remote content, so local files must be injected
-	 * through asWebviewUri), and `__LLAMA_ONBOARDING_ICON_URL__` (the img
-	 * src) with the icon's webview URI. Both placeholders also occur in the
-	 * header documentation comments, so the replace is global.
+	 * through asWebviewUri), and the two icon placeholders
+	 * (`__LLAMA_ONBOARDING_ICON_URL__` and
+	 * `__LLAMA_ONBOARDING_ICON_URL_DARK__` — the light/dark marks) with the
+	 * icons' webview URIs. All placeholders also occur in the header
+	 * documentation comments, so the replace is global.
 	 *
 	 * The load is async: state posted before the webview's scripts run is
 	 * lost, but the webview sends { type: 'ready' } once booted and the
@@ -209,7 +219,10 @@ export class OnboardingWizardPanel {
 			const htmlPath = vscode.Uri.joinPath(this.extensionUri, WEBVIEW_HTML_RELATIVE_PATH);
 			const template = await fs.readFile(htmlPath.fsPath, 'utf8');
 			const iconUrl = panel.webview
-				.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'llama1-icon.png'))
+				.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'llama-icon-light.png'))
+				.toString();
+			const iconDarkUrl = panel.webview
+				.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'llama-icon-dark.png'))
 				.toString();
 
 			const scriptTag = (relativePath: string): string => {
@@ -223,8 +236,21 @@ export class OnboardingWizardPanel {
 				scriptTag(WEBVIEW_CORE_JS_RELATIVE_PATH) +
 				scriptTag(WIZARD_CONTROLLER_JS_RELATIVE_PATH);
 
+			// Load generated Tailwind CSS (graceful fallback — empty string if missing).
+			let tailwindCss = '';
+			try {
+				const cssPath = vscode.Uri.joinPath(this.extensionUri, TAILWIND_CSS_RELATIVE_PATH);
+				tailwindCss = await fs.readFile(cssPath.fsPath, 'utf8');
+			} catch {
+				// CSS not built yet (e.g. dev before first compile). The placeholder
+				// will be replaced with an empty string — the static CSS in the HTML
+				// still provides all styling.
+			}
+
 			panel.webview.html = template
+				.replace(new RegExp(TAILWIND_CSS_PLACEHOLDER, 'g'), tailwindCss)
 				.replace(new RegExp(WEBVIEW_SCRIPTS_PLACEHOLDER, 'g'), scripts)
+				.replace(new RegExp(ICON_URL_DARK_PLACEHOLDER, 'g'), iconDarkUrl)
 				.replace(new RegExp(ICON_URL_PLACEHOLDER, 'g'), iconUrl);
 		} catch (err) {
 			// The HTML ships with the extension; a read failure means a broken

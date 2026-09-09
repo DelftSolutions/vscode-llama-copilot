@@ -38,7 +38,7 @@ export class UnsupportedIniVersionError extends Error {
 
 	constructor(fileVersion: number, supportedVersion: number = SUPPORTED_INI_VERSION) {
 		super(
-			`This models.ini uses format version ${fileVersion}, but LLaMA Copilot only supports version ${supportedVersion}. Update the extension, or edit the file manually.`
+			`This models.ini uses format version ${fileVersion}, but Llama Copilot only supports version ${supportedVersion}. Update the extension, or edit the file manually.`
 		);
 		this.name = 'UnsupportedIniVersionError';
 		this.fileVersion = fileVersion;

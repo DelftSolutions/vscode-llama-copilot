@@ -10,6 +10,9 @@
  *     toggled with `hidden`; every step in WIZARD_STEPS (wizardUI.ts) has one
  *   - repeated items: model cards cloned from <template
  *     data-wizard-target="modelCardTemplate">
+ *   - sidebar: [data-wizard-target="sidebarStep"] entries carry a
+ *     space-separated data-step list of the WizardSteps they cover;
+ *     showScreen() toggles .active on the entry that owns the current step
  *   - dynamic text is set with textContent / setAttribute only (rule 3 in
  *     the index.html header) — never innerHTML with dynamic data
  *   - actions: data-action="wizard#method" elements call the matching
@@ -59,6 +62,12 @@
 		showScreen(step) {
 			for (const el of this.targets('screen')) {
 				el.hidden = el.dataset.screen !== step;
+			}
+			// Highlight the sidebar entry that owns this step (its data-step
+			// attribute lists every step it covers, space-separated).
+			for (const el of this.targets('sidebarStep')) {
+				const owned = String(el.dataset.step || '').split(/\s+/);
+				el.classList.toggle('active', owned.includes(step));
 			}
 		}
 
@@ -131,11 +140,24 @@
 		}
 
 		renderStarting(state) {
+			const systemCheck = this.target('systemCheck');
+			systemCheck.classList.toggle('pending', !state.systemChecked);
+			const systemMark = this.target('systemCheckMark');
+			systemMark.classList.toggle('empty', !state.systemChecked);
+			systemMark.textContent = state.systemChecked ? '\u2713' : '';
+
+			// The server check has three faces: pending (empty circle),
+			// done (✓), and failed (✗) while an error is shown. startError
+			// only concerns the server — the system check above is
+			// unaffected.
+			const failed = !!state.startError;
 			const check = this.target('serverCheck');
-			check.classList.toggle('pending', !state.serverStarted);
+			check.classList.toggle('error', failed);
+			check.classList.toggle('pending', !state.serverStarted && !failed);
 			const mark = this.target('serverCheckMark');
-			mark.classList.toggle('empty', !state.serverStarted);
-			mark.textContent = state.serverStarted ? '\u2713' : '';
+			mark.classList.toggle('error', failed);
+			mark.classList.toggle('empty', !state.serverStarted && !failed);
+			mark.textContent = failed ? '\u2717' : state.serverStarted ? '\u2713' : '';
 
 			setError(this.target('startError'), state.startError);
 			const status = this.target('startStatus');

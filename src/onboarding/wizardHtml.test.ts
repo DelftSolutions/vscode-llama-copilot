@@ -25,6 +25,7 @@ const CORE_PATH = path.join(MEDIA_ROOT, 'js', 'webview-core.js');
 const CONTROLLER_PATH = path.join(MEDIA_ROOT, 'onboarding', 'wizard-controller.js');
 
 const ICON_TOKEN = '__LLAMA_ONBOARDING_ICON_URL__';
+const ICON_TOKEN_DARK = '__LLAMA_ONBOARDING_ICON_URL_DARK__';
 const SCRIPTS_TOKEN = '__LLAMA_WEBVIEW_SCRIPTS__';
 
 /**
@@ -79,8 +80,9 @@ describe('wizard webview contract (media/onboarding + media/js)', () => {
 			expect(html.match(new RegExp(SCRIPTS_TOKEN, 'g'))?.length).toBe(1);
 		});
 
-		it('contains the icon placeholder exactly once (replaced by wizardUI.ts)', () => {
-			expect(html.match(new RegExp(ICON_TOKEN, 'g'))?.length).toBe(1);
+		it('contains the icon placeholders for every icon usage (light + dark mark, sidebar + done screen; replaced globally by wizardUI.ts)', () => {
+			expect(html.match(new RegExp(ICON_TOKEN, 'g'))?.length).toBe(2);
+			expect(html.match(new RegExp(ICON_TOKEN_DARK, 'g'))?.length).toBe(2);
 		});
 
 		it('has no external resources (the webview CSP blocks remote content)', () => {
@@ -89,6 +91,17 @@ describe('wizard webview contract (media/onboarding + media/js)', () => {
 			expect(html).not.toMatch(/<script[^>]+src\s*=/i);
 			expect(html).not.toMatch(/<link[^>]+href\s*=/i);
 			expect(html).not.toMatch(/https?:\/\//);
+		});
+
+		it('defines every --max-* token the author CSS consumes (light + dark)', () => {
+			const consumed = Array.from(new Set(
+				Array.from(html.matchAll(/var\(\s*(--max-[a-z0-9-]+)/gi)).map(m => m[1])
+			));
+			expect(consumed.length, 'expected the author CSS to use brand tokens').toBeGreaterThan(0);
+			for (const token of consumed) {
+				expect(html, `${token} is used in the author CSS but never defined in the token block`)
+					.toContain(token + ':');
+			}
 		});
 	});
 

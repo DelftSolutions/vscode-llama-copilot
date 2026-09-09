@@ -143,7 +143,7 @@ function updateInlineCompletionProvider(endpoints: EndpointsConfig, context: vsc
 
 export function activate(context: vscode.ExtensionContext) {
 	// Create output channel for API logging
-	const outputChannel = vscode.window.createOutputChannel('LLaMA Server API');
+	const outputChannel = vscode.window.createOutputChannel('Llama Server API');
 	context.subscriptions.push(outputChannel);
 
 	// Initialize logger with output channel

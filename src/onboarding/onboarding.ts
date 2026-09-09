@@ -413,6 +413,10 @@ export class OnboardingOrchestrator {
 	private showStartError(): void {
 		const port = this.deps.getPort();
 		this.updateState({
+			// The server is not (still) running — uncheck it in the webview
+			// so the starting screen never shows a done checkmark next to
+			// an error.
+			serverStarted: false,
 			startError: {
 				title: 'The server did not start',
 				detail:

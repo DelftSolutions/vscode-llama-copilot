@@ -37,11 +37,17 @@ const WEBVIEW_CORE_JS_RELATIVE_PATH = path.join('media', 'js', 'webview-core.js'
 /** Models manager controller, relative to the extension root. */
 const MODELS_MANAGER_CONTROLLER_JS_RELATIVE_PATH = path.join('media', 'models-manager', 'models-manager-controller.js');
 
+/** Generated Tailwind CSS for the models manager, relative to the extension root. */
+const TAILWIND_CSS_RELATIVE_PATH = path.join('media', 'models-manager', 'tailwind.css');
+
 /**
  * Placeholder in the HTML replaced with the two <script> tags (core first,
  * controller second) pointing at webview-origin URIs.
  */
 const WEBVIEW_SCRIPTS_PLACEHOLDER = '__LLAMA_WEBVIEW_SCRIPTS__';
+
+/** Placeholder in the HTML <style> block replaced with the generated Tailwind CSS. */
+const TAILWIND_CSS_PLACEHOLDER = '__LLAMA_TAILWIND_CSS__';
 
 interface PresetViewState {
 	id: string;
@@ -111,7 +117,7 @@ export async function openModelsManager(options: ModelsManagerUIOptions): Promis
 
 	currentPanel = vscode.window.createWebviewPanel(
 		'llamaCopilot.modelsManager',
-		'LLaMA Models Manager',
+		'Llama Models Manager',
 		vscode.ViewColumn.One,
 		{
 			enableScripts: true,
@@ -280,7 +286,19 @@ async function loadWebviewHtml(panel: vscode.WebviewPanel, extensionUri: vscode.
 			scriptTag(WEBVIEW_CORE_JS_RELATIVE_PATH) +
 			scriptTag(MODELS_MANAGER_CONTROLLER_JS_RELATIVE_PATH);
 
+		// Load generated Tailwind CSS (graceful fallback — empty string if missing).
+		let tailwindCss = '';
+		try {
+			const cssPath = vscode.Uri.joinPath(extensionUri, TAILWIND_CSS_RELATIVE_PATH);
+			tailwindCss = await fs.readFile(cssPath.fsPath, 'utf8');
+		} catch {
+			// CSS not built yet (e.g. dev before first compile). The placeholder
+			// will be replaced with an empty string — the static CSS in the HTML
+			// still provides all styling.
+		}
+
 		panel.webview.html = template
+			.replace(new RegExp(TAILWIND_CSS_PLACEHOLDER, 'g'), tailwindCss)
 			.replace(new RegExp(WEBVIEW_SCRIPTS_PLACEHOLDER, 'g'), scripts);
 	} catch (err) {
 		// The HTML ships with the extension; a read failure means a broken
@@ -288,7 +306,7 @@ async function loadWebviewHtml(panel: vscode.WebviewPanel, extensionUri: vscode.
 		const msg = err instanceof Error ? err.message : String(err);
 		panel.webview.html =
 			'<!DOCTYPE html><html><body style="font-family: var(--vscode-font-family); padding: 24px;">' +
-			'<h1>LLaMA Models Manager</h1>' +
+			'<h1>Llama Models Manager</h1>' +
 			'<p>Failed to load the models manager UI: ' + msg.replace(/[&<>]/g, '') + '</p></body></html>';
 	}
 }

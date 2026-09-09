@@ -43,7 +43,7 @@
 			if (state.iniFormatError) {
 				banner.hidden = false;
 				banner.textContent = 'This models.ini uses format version ' + state.iniFormatError.fileVersion +
-					', but LLaMA Copilot only supports version ' + state.iniFormatError.supportedVersion +
+					', but Llama Copilot only supports version ' + state.iniFormatError.supportedVersion +
 					'. Update the extension, or edit the file manually.';
 			} else {
 				banner.hidden = true;

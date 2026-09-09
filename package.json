@@ -4,7 +4,7 @@
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
 	"version": "2.0.0",
-	"icon": "llama1-icon.png",
+	"icon": "llama-icon-light.png",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -20,7 +20,10 @@
 	"enabledApiProposals": [
 		"languageModelThinkingPart"
 	],
-	"extensionKind": ["ui", "workspace"],
+	"extensionKind": [
+		"ui",
+		"workspace"
+	],
 	"categories": [
 		"AI",
 		"Chat"
@@ -29,7 +32,7 @@
 		"languageModelChatProviders": [
 			{
 				"vendor": "llama-server",
-				"displayName": "LLaMA Server",
+				"displayName": "Llama Server",
 				"managementCommand": "llamaCopilot.openEndpointSettings"
 			}
 		],
@@ -44,31 +47,31 @@
 			},
 			{
 				"command": "llamaCopilot.startServer",
-				"title": "LLaMA Copilot: Start Server"
+				"title": "Llama Copilot: Start Server"
 			},
 			{
 				"command": "llamaCopilot.stopServer",
-				"title": "LLaMA Copilot: Stop Server"
+				"title": "Llama Copilot: Stop Server"
 			},
 			{
 				"command": "llamaCopilot.restartServer",
-				"title": "LLaMA Copilot: Restart Server"
+				"title": "Llama Copilot: Restart Server"
 			},
 			{
 				"command": "llamaCopilot.updateBinary",
-				"title": "LLaMA Copilot: Update llama-server Binary"
+				"title": "Llama Copilot: Update llama-server Binary"
 			},
 			{
 				"command": "llamaCopilot.manageModels",
-				"title": "LLaMA Copilot: Manage Models"
+				"title": "Llama Copilot: Manage Models"
 			},
 			{
 				"command": "llamaCopilot.editModelsIni",
-				"title": "LLaMA Copilot: Edit models.ini"
+				"title": "Llama Copilot: Edit models.ini"
 			}
 		],
 		"configuration": {
-			"title": "LLaMA Server",
+			"title": "Llama Server",
 			"properties": {
 				"llamaCopilot.endpoints": {
 					"type": "object",
@@ -91,15 +94,15 @@
 									"type": "string"
 								}
 							},
-						"requestBody": {
-							"type": "object",
-							"description": "Optional JSON properties to merge into request body for this endpoint"
-						},
-						"thinkingBudgetFraction": {
-							"type": "number",
-							"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget."
-						},
-						"models": {
+							"requestBody": {
+								"type": "object",
+								"description": "Optional JSON properties to merge into request body for this endpoint"
+							},
+							"thinkingBudgetFraction": {
+								"type": "number",
+								"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget."
+							},
+							"models": {
 								"type": "object",
 								"description": "Per-model configuration. Each key is a model ID (without @endpoint suffix)",
 								"additionalProperties": {
@@ -120,15 +123,15 @@
 											"type": "number",
 											"description": "Override context size for this model (in tokens)"
 										},
-									"maxOutputTokens": {
-										"type": "number",
-										"description": "Override maximum output tokens for this model"
-									},
-									"thinkingBudgetFraction": {
-										"type": "number",
-										"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget. Overrides endpoint-level setting."
-									},
-									"capabilities": {
+										"maxOutputTokens": {
+											"type": "number",
+											"description": "Override maximum output tokens for this model"
+										},
+										"thinkingBudgetFraction": {
+											"type": "number",
+											"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget. Overrides endpoint-level setting."
+										},
+										"capabilities": {
 											"type": "object",
 											"description": "Override capabilities for this model",
 											"properties": {
@@ -270,7 +273,9 @@
 				},
 				"llamaCopilot.server.extraArgs": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"default": [],
 					"description": "Additional command-line arguments passed to the managed llama-server (e.g. [\"--rate-limit\", \"600\"])."
 				},
@@ -286,9 +291,13 @@
 		"vscode:prepublish": "npm run compile",
 		"download-api": "dts main -f && dts dev",
 		"postinstall": "npm run download-api",
-		"compile": "tsc -p ./",
+		"compile": "npm run build:css && tsc -p ./",
+		"build:css": "npx tailwindcss -c tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css && npx tailwindcss -c tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css",
+		"watch:css": "npx tailwindcss -c tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css --watch & npx tailwindcss -c tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css --watch",
 		"test": "vitest run",
-		"lint": "eslint",	"preview:wizard": "node scripts/preview-wizard.mjs",		"watch": "tsc -watch -p ./"
+		"lint": "eslint",
+		"preview:wizard": "npm run build:css && node scripts/preview-wizard.mjs",
+		"watch": "tsc -watch -p ./"
 	},
 	"dependencies": {
 		"undici": "^6.21.0"
@@ -301,6 +310,7 @@
 		"@vscode/dts": "^0.4.1",
 		"@vscode/vsce": "^3.7.1",
 		"eslint": "^9.13.0",
+		"tailwindcss": "^3.4.19",
 		"typescript": "^5.9.2",
 		"typescript-eslint": "^8.39.0",
 		"vitest": "^4.0.18"

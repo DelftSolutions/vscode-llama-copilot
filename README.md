@@ -399,7 +399,7 @@ hf = sweepai/sweep-next-edit-0.5B:Q8_0
 | **Max input bytes** | Maximum total input size (prefix + suffix + context) sent to the server. |
 | **Include context** | When enabled, include content from other open tabs to improve suggestions. |
 | **Inline completion prompt** | Text sent as the `/infill` `prompt` field (after the FIM middle marker). Default nudges short completions; clear to omit. Endpoint or model `requestBody.prompt` overrides this. |
-| **Debug: Inline completion** | Log requests, cancellations, and errors to the "LLaMA Server API" output. |
+| **Debug: Inline completion** | Log requests, cancellations, and errors to the "Llama Server API" output. |
 
 ## Cursor Rules Integration
 
@@ -536,7 +536,7 @@ Use the command "Open Endpoint Settings" to quickly access the configuration, or
 - Check that models are loaded in `llama-server` (visit `/models` endpoint)
 - Ensure models don't have "/" in their ID (these are filtered out)
 - Verify the endpoint URL is correct
-- Check the VS Code output panel for error messages (View → Output → "LLaMA Server API")
+- Check the VS Code output panel for error messages (View → Output → "Llama Server API")
 
 ### Configuration Errors
 
@@ -555,3 +555,4 @@ Use the command "Open Endpoint Settings" to quickly access the configuration, or
 - [llama.cpp GitHub](https://github.com/ggml-org/llama.cpp)
 - [llama.cpp Quick Start](https://github.com/ggml-org/llama.cpp#quick-start)
 - [llama-server Documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+- [llama.brand](https://github.com/ggml-org/llama.brand) — source of the Llama icons used in this extension (`llama-icon-light.png`, `llama-icon-dark.png` — the repo's `icon/` assets), licensed CC BY-NC 4.0 and used here solely to refer to llama.cpp, per [ggml-org's brand-usage grant](https://github.com/ggml-org/llama.brand/blob/master/BRAND-USAGE.md)
