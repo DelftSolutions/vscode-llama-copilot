@@ -353,8 +353,6 @@
 			display: flex;
 		}
 
-		/* Author styles (e.g. .badge { display: inline-block }) would otherwise
-	   override the UA stylesheet's [hidden] rule. */
 		[hidden] {
 			display: none !important;
 		}
@@ -381,20 +379,13 @@
 			width: 100%;
 		}
 
-		/* Divider between the sidebar and the content. Written as one
-	   border-right shorthand (width+style+color, right side only) on
-	   purpose: Tailwind's border-solid would set the style on ALL four
-	   sides, and with preflight off the other sides would render at the
-	   browser's default 3px width. */
+
 		.sidebar {
 			border-right: 1px solid var(--vscode-widget-border);
 			max-width: 260px;
 			width: 100%;
 		}
 
-		/* Sidebar steps (wizard progress). The active step is painted with
-	   the brand accent tokens (see the token block above), which keep
-	   readable contrast on both light and dark themes. */
 		.step {
 			display: flex;
 			align-items: center;
@@ -450,8 +441,6 @@
 
 		.model-card {
 			margin-bottom: 8px;
-			/* recommendation band: 8px to its reason line below, and the
-			   list rhythm between the expanded other-model cards */
 		}
 
 		.option:hover,
@@ -506,7 +495,6 @@
 			font-size: 0.8em;
 			color: var(--vscode-descriptionForeground);
 			margin-bottom: 20px;
-			/* band gap: header -> recommendation */
 		}
 
 		.reason {
@@ -598,7 +586,6 @@
 			font-size: 0.8em;
 			line-height: 1.4;
 			margin-left: 20px;
-			/* aligns with the title text — see ::before */
 		}
 
 		.checks {
@@ -619,8 +606,7 @@
 			opacity: 0.6;
 		}
 
-		/* Identical to .step.active .step-num — fill, outline and glyph
-	   come from the same step tokens (see the token block above). */
+
 		.check {
 			width: 16px;
 			height: 16px;
@@ -662,13 +648,6 @@
 			padding-top: 14px;
 			border-top: 1px solid var(--vscode-widget-border);
 			gap: 8px;
-		}
-
-		/* Model screen: the "See all models" link (or the expanded model
-		   list) belongs to the actions band — 8px to the divider instead
-		   of the 20px the other screens give their last content element.
-		[data-screen="model"] .footer {
-			margin-top: 8px;
 		}
 
 		/* Primary button — brand accent (token block above): tinted fill,
@@ -713,7 +692,6 @@
 		.disabled-btn {
 			background: transparent;
 			color: var(--max-disabled-button-color);
-			/* neutral gray — not part of the accent palette */
 			border: none;
 		}
 
