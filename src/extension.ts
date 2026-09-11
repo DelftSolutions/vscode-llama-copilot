@@ -438,7 +438,10 @@ function runBackgroundUpdateCheck(): void {
 }
 
 async function startServer(context: vscode.ExtensionContext): Promise<void> {
-	if (!binaryManager || !modelsIniManager) return;
+	// Create the managers if needed — the onboarding wizard calls this in
+	// sessions where initManagedServer() (the usual creator) never ran.
+	await ensureManagers(context);
+	if (!binaryManager || !modelsIniManager) return; // unreachable — ensureManagers creates them
 
 	if (!serverManager) {
 		serverManager = new LlamaServerManager({

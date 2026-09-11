@@ -52,7 +52,7 @@ export function recommendModel(
 	const ramGB = Math.round(systemInfo.systemRamMB / 1024);
 	return {
 		presetId: best.id,
-		reason: `\\u2191 A good balance of quality and speed that fits comfortably on ${ramGB} GB RAM.`,
+		reason: `↑ A good balance of quality and speed that fits comfortably on ${ramGB} GB RAM.`,
 	};
 }
 

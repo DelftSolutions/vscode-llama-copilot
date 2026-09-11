@@ -133,11 +133,16 @@ export class OnboardingOrchestrator {
 			this.data = freshOnboardingData(step);
 			if (managed) this.data.mode = 'managed';
 			await this.persist();
+			await this.ensureManagersReady();
 			this.openAtStep(step);
 			return 'wizard';
 		}
 
-		// In progress → resume at the saved step.
+		// In progress → resume at the saved step. The managers are created
+		// lazily by the extension and this path is the one that usually
+		// skips their creation — without them a resume at 'downloading'
+		// would freeze on "Connecting..." forever.
+		await this.ensureManagersReady();
 		this.openAtStep(this.data.step);
 		return 'wizard';
 	}
@@ -158,6 +163,7 @@ export class OnboardingOrchestrator {
 		if (presetId) this.data.presetId = presetId;
 		await this.persist();
 		this.completed = false;
+		await this.ensureManagersReady();
 		this.openAtStep('mode');
 	}
 
@@ -173,10 +179,16 @@ export class OnboardingOrchestrator {
 			this.showPlatformUnsupported();
 			return;
 		}
-		this.managedEnabledAtSessionStart = this.deps.isManaged();
-		this.managedEnabledBySession = false;
+		// Check for existing state BEFORE touching the session flags: the
+		// extension's config listener also calls this method in reaction to
+		// the wizard's own screen-1 write of server.managed, and clobbering
+		// the flags there would break the "revert if we enabled it"
+		// bookkeeping (Back → Advanced/Skip).
 		const stored = await loadOnboardingState(this.deps.globalState);
 		if (stored) return;
+
+		this.managedEnabledAtSessionStart = this.deps.isManaged();
+		this.managedEnabledBySession = false;
 
 		// Binary already installed? Skip straight to the model picker.
 		let binaryReady = false;
@@ -232,8 +244,24 @@ export class OnboardingOrchestrator {
 	}
 
 	private async startDownload(): Promise<void> {
+		// The managers are created lazily by the extension; a resumed
+		// session (VS Code restarted mid-setup) may not have created them.
+		await this.ensureManagersReady();
 		const binary = this.deps.getBinaryManager();
-		if (!binary) return;
+		if (!binary) {
+			// A silent return here would leave the wizard stuck on
+			// "Connecting..." with no error and no Retry button.
+			this.updateState({
+				downloadError: {
+					title: 'Could not start the download',
+					detail:
+						'The download manager is unavailable. Reload the window ' +
+						'("Developer: Reload Window") and try again.',
+				},
+			});
+			this.statusBar.setError();
+			return;
+		}
 
 		// Already installed (e.g. VS Code closed right after the download)?
 		try {
@@ -384,7 +412,21 @@ export class OnboardingOrchestrator {
 
 	private watchServer(modelName: string): void {
 		const mgr = this.deps.getServerManager();
-		if (!mgr) return;
+		if (!mgr) {
+			// Without a visible error the starting screen would sit at
+			// "Starting the server..." forever.
+			this.updateState({
+				serverStarted: false,
+				startError: {
+					title: 'The server did not start',
+					detail:
+						'The server manager is unavailable. Reload the window ' +
+						'("Developer: Reload Window") and try again.',
+				},
+			});
+			this.statusBar.setError();
+			return;
+		}
 
 		this.serverStateSub?.dispose();
 		this.serverStateSub = mgr.onStateChanged((serverState: ManagedServerState) => {
@@ -657,6 +699,20 @@ export class OnboardingOrchestrator {
 				.update('server.managed', false, vscode.ConfigurationTarget.Global);
 		} catch {
 			// Non-fatal.
+		}
+	}
+
+	/**
+	 * The binary/models-ini managers are created lazily by the extension;
+	 * a resumed wizard session (VS Code restarted mid-setup) may not have
+	 * created them yet. Non-fatal: a step that still finds a missing
+	 * manager surfaces its own error instead of freezing silently.
+	 */
+	private async ensureManagersReady(): Promise<void> {
+		try {
+			await this.deps.ensureManagers();
+		} catch {
+			// Non-fatal — the step that needs a manager reports the error.
 		}
 	}
 
