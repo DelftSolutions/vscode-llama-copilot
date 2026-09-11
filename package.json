@@ -296,7 +296,6 @@
 		"watch:css": "npx tailwindcss -c tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css --watch & npx tailwindcss -c tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css --watch",
 		"test": "vitest run",
 		"lint": "eslint",
-		"preview:wizard": "npm run build:css && node scripts/preview-wizard.mjs",
 		"watch": "tsc -watch -p ./"
 	},
 	"dependencies": {

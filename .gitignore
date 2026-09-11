@@ -1,5 +1,4 @@
 dev-docs/
 node_modules/
 out/
-preview/
 *.vsix

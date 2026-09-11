@@ -4,8 +4,7 @@
  *
  * What it provides (no dependencies, plain script tag, `window.LlamaWebview`):
  *
- *   - host API acquisition: uses acquireVsCodeApi() when present, falls back
- *     to a console logger in a plain browser (scripts/preview-*.mjs).
+ *   - host API acquisition: uses acquireVsCodeApi() to talk to the host.
  *   - the `ready` handshake: posts { type: 'ready' } once, so the host
  *     re-sends the full current state (state posted before page load is lost).
  *   - the `setState` listener: window 'message' events with
@@ -40,17 +39,11 @@
 	'use strict';
 
 	/**
-	 * Host API with a plain-browser fallback. The fallback keeps
-	 * scripts/preview-*.mjs working: actions are logged instead of sent.
+	 * Host API. Only valid inside a VS Code webview, where the host injects
+	 * acquireVsCodeApi().
 	 */
 	function acquireApi() {
-		if (typeof window.acquireVsCodeApi === 'function') {
-			return window.acquireVsCodeApi();
-		}
-		return {
-			postMessage: action => console.log('[webview -> host]', action),
-			getState: () => null
-		};
+		return window.acquireVsCodeApi();
 	}
 
 	/**
