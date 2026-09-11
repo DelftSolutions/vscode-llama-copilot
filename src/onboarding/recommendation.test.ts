@@ -25,18 +25,6 @@ describe('recommendModel', () => {
 		expect(rec?.presetId).toBe('glm-4-7-flash');
 	});
 
-	it('64 GB RAM → Gemma 3 27B IT', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 64 * GB }, 500 * GB);
-		expect(rec?.presetId).toBe('gemma3-27b-it');
-	});
-
-	it('128 GB RAM → still the highest-ranked preset that fits (Nemotron 30B fits at this size)', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 128 * GB }, 500 * GB);
-		// 50% of 128 GB = 64 GB → Nemotron (64 GB) becomes a candidate,
-		// but Gemma 3 27B has the highest qualityRank.
-		expect(rec?.presetId).toBe('gemma3-27b-it');
-	});
-
 	it('low RAM (8 GB) → null (nothing fits the 50% limit)', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 8 * GB }, 100 * GB);
 		expect(rec).toBeNull();
@@ -76,9 +64,9 @@ describe('recommendModel', () => {
 		expect(rec?.presetId).toBe('qwen3-4b');
 	});
 
-	it('prefers quality over speed among fitting candidates', () => {
+	it('recommends the only candidate that fits on modest RAM', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 40 * GB);
-		// Both Qwen 3 4B (rank 2) and Gemma 3 4B (rank 1) fit; Qwen wins.
+		// 50% of 16 GB is 8 GB, so only Qwen 3 4B (5 GB min) fits; the rest need more.
 		expect(rec?.presetId).toBe('qwen3-4b');
 	});
 

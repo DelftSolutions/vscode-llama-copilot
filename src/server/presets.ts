@@ -49,21 +49,6 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		],
 	},
 	{
-		id: 'gemma3-4b-it',
-		displayName: 'Gemma 3 4B IT (Q8)',
-		minRamMB: 5120,
-		qualityRank: 1,
-		version: 1,
-		iniLines: [
-			'jinja = true',
-			'ctx-size = 32768',
-			'temp = 0.7',
-			'top-p = 0.95',
-			'min-p = 0.01',
-			'hf = unsloth/gemma-3-4b-it-GGUF:Q8_0',
-		],
-	},
-	{
 		id: 'glm-4.5-air-5bit',
 		displayName: 'GLM 4.5 AIR (Q5)',
 		qualityRank: 3,
@@ -129,25 +114,7 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 			'stop-timeout = 120',
 		],
 	},
-	{
-		qualityRank: 7,
-		id: 'gemma3-27b-it',
-		displayName: 'Gemma 3 27B IT (Q4)',
-		minRamMB: 20480,
-		version: 1,
-		iniLines: [
-			'jinja = true',
-			'ctx-size = 0',
-			'temp = 1.0',
-			'top-k = 64',
-			'min-p = 0.01',
-			'top-p = 0.95',
-			'repeat-penalty = 1.0',
-			'fit = on',
-			'hf = unsloth/gemma-3-27b-it-qat-GGUF:Q4_K_XL',
-			'stop-timeout = 120',
-		],
-	},
+
 ];
 
 /**
