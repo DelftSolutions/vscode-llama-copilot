@@ -21,7 +21,11 @@ export interface ModelPreset {
 	iniLines: string[];
 	/** Version number -- bumped when we change the preset config */
 	version: number;
-	/** If true, hidden from UI unless currently active in models.ini */
+	/**
+	 * If true, never shown in the UI (recommendations, onboarding model
+	 * list, Models Manager). Managed sections still enabled in models.ini
+	 * are auto-migrated to `successor` before the server starts.
+	 */
 	deprecated?: true;
 	/** ID of the replacement preset when deprecated (must not itself be deprecated) */
 	successor?: string;
@@ -54,6 +58,8 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		minRamMB: 5120,
 		qualityRank: 1,
 		version: 1,
+		deprecated: true,
+		successor: 'qwen3-4b',
 		iniLines: [
 			'jinja = true',
 			'ctx-size = 32768',
@@ -135,6 +141,8 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
 		displayName: 'Gemma 3 27B IT (Q4)',
 		minRamMB: 20480,
 		version: 1,
+		deprecated: true,
+		successor: 'qwen3-30b-a3b',
 		iniLines: [
 			'jinja = true',
 			'ctx-size = 0',

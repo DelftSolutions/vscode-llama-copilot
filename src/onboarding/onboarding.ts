@@ -354,7 +354,12 @@ export class OnboardingOrchestrator {
 				isRecommended: p.id === rec?.presetId,
 			}));
 
-		const selectedPresetId = this.data.presetId ?? rec?.presetId ?? models[0]?.id ?? null;
+		// A preset id persisted before the preset was deprecated must not be
+		// re-selected — fall back to the recommendation instead.
+		const persistedPresetId = this.data.presetId && !getPresetById(this.data.presetId)?.deprecated
+			? this.data.presetId
+			: null;
+		const selectedPresetId = persistedPresetId ?? rec?.presetId ?? models[0]?.id ?? null;
 		if (selectedPresetId && this.data.presetId !== selectedPresetId) {
 			this.data.presetId = selectedPresetId;
 			await this.persist();

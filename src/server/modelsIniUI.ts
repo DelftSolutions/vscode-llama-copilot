@@ -208,8 +208,11 @@ async function updateWebviewState(
 		const managedInfo = enabled.get(preset.id);
 		const isEnabled = !!managedInfo;
 
-		// Skip deprecated presets that aren't active
-		if (preset.deprecated && !isEnabled) continue;
+		// Deprecated presets never appear in the manager. Users who had one
+		// enabled get it auto-migrated to the successor before the server
+		// starts (migrateDeprecatedPresets), so there is no active section
+		// left to show.
+		if (preset.deprecated) continue;
 
 		const successorPreset = preset.successor ? getPresetById(preset.successor) : undefined;
 

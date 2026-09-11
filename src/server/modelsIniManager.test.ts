@@ -257,4 +257,63 @@ jinja = true`;
 			await expect(manager.applyAutoupdates()).rejects.toBeInstanceOf(UnsupportedIniVersionError);
 		});
 	});
+
+	describe('ModelsIniManager migrateDeprecatedPresets', () => {
+		let tmpDir: string;
+		let manager: ModelsIniManager;
+
+		beforeEach(async () => {
+			tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'models-ini-'));
+			manager = new ModelsIniManager(tmpDir);
+		});
+
+		afterEach(async () => {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		});
+
+		it('replaces enabled deprecated presets with their successor', async () => {
+			await manager.enablePreset('gemma3-4b-it');
+			await manager.enablePreset('gemma3-27b-it');
+
+			const migrated = await manager.migrateDeprecatedPresets();
+			expect(migrated.sort()).toEqual(['qwen3-30b-a3b', 'qwen3-4b']);
+
+			const enabled = await manager.getEnabledPresets();
+			expect(enabled.has('gemma3-4b-it')).toBe(false);
+			expect(enabled.has('gemma3-27b-it')).toBe(false);
+			expect(enabled.has('qwen3-4b')).toBe(true);
+			expect(enabled.has('qwen3-30b-a3b')).toBe(true);
+		});
+
+		it('drops the deprecated section when the successor is already enabled', async () => {
+			await manager.enablePreset('gemma3-4b-it');
+			await manager.enablePreset('qwen3-4b');
+
+			const migrated = await manager.migrateDeprecatedPresets();
+			expect(migrated).toEqual(['qwen3-4b']);
+
+			const enabled = await manager.getEnabledPresets();
+			expect(enabled.has('gemma3-4b-it')).toBe(false);
+			expect(enabled.has('qwen3-4b')).toBe(true);
+
+			// No duplicate successor section in the file
+			const content = await fs.readFile(manager.getIniPath(), 'utf-8');
+			const occurrences = content.split('[qwen3-4b]').length - 1;
+			expect(occurrences).toBe(1);
+		});
+
+		it('is a no-op when no deprecated preset is enabled', async () => {
+			await manager.enablePreset('qwen3-4b');
+			const before = await fs.readFile(manager.getIniPath(), 'utf-8');
+
+			const migrated = await manager.migrateDeprecatedPresets();
+			expect(migrated).toEqual([]);
+			expect(await fs.readFile(manager.getIniPath(), 'utf-8')).toBe(before);
+		});
+
+		it('throws for unsupported format version', async () => {
+			await fs.writeFile(manager.getIniPath(), 'version = 2\n', 'utf-8');
+			await expect(manager.migrateDeprecatedPresets()).rejects.toBeInstanceOf(UnsupportedIniVersionError);
+		});
+	});
 });

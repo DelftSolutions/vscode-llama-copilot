@@ -349,6 +349,57 @@ export class ModelsIniManager {
 	}
 
 	/**
+	 * Auto-migrate every managed section that still points at a deprecated
+	 * preset to its successor, so deprecated models never reach the runtime
+	 * (and never show up in the Models Manager). If the successor is
+	 * already enabled, the deprecated section is simply dropped.
+	 * Returns the list of successor preset IDs the sections now point at.
+	 */
+	async migrateDeprecatedPresets(): Promise<string[]> {
+		const sections = await this.readSections();
+		const fileVersion = parseFileVersion(sections);
+		if (fileVersion !== null && fileVersion > SUPPORTED_INI_VERSION) {
+			throw new UnsupportedIniVersionError(fileVersion);
+		}
+
+		const migrated: string[] = [];
+
+		for (let i = sections.length - 1; i >= 0; i--) {
+			const section = sections[i];
+			if (!section.managed) continue;
+
+			const preset = getPresetById(section.managed.templateId);
+			if (!preset?.deprecated || !preset.successor) continue;
+
+			const successor = getPresetById(preset.successor);
+			if (!successor) continue;
+
+			const successorEnabled = sections.some(
+				s => s !== section && s.managed?.templateId === successor.id
+			);
+
+			if (successorEnabled) {
+				// Already on the successor — just drop the deprecated section
+				sections.splice(i, 1);
+			} else {
+				const autoupdate = section.managed.autoupdate;
+				sections[i] = {
+					name: successor.id,
+					lines: buildPresetSection(successor, autoupdate),
+					managed: { templateId: successor.id, autoupdate, version: successor.version },
+				};
+			}
+			migrated.push(successor.id);
+		}
+
+		if (migrated.length > 0) {
+			await this.writeSections(sections);
+		}
+
+		return migrated;
+	}
+
+	/**
 	 * Apply autoupdates: for each managed section with autoupdate=on,
 	 * check if the preset version is newer and update the content.
 	 * Returns the list of updated preset IDs.

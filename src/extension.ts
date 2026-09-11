@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { LlamaCopilotChatProvider } from './provider';
-import { initializeLogger } from './logger';
+import { initializeLogger, logError } from './logger';
 import { EndpointsConfig } from './types';
 import {
 	CONFIG_SECTION,
@@ -463,6 +463,18 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
 
 	const hasIni = await modelsIniManager.exists();
 	if (!hasIni) return;
+
+	// Replace managed sections that still point at deprecated presets with
+	// their successor, so deprecated models never start and never show up
+	// in the Models Manager. Non-fatal: the server starts anyway if this
+	// fails (an unsupported ini format is surfaced by the manager banner).
+	try {
+		await modelsIniManager.migrateDeprecatedPresets();
+	} catch (err) {
+		if (!(err instanceof UnsupportedIniVersionError)) {
+			logError(err as Error, 'migrateDeprecatedPresets failed before server start');
+		}
+	}
 
 	await serverManager.start(true);
 }

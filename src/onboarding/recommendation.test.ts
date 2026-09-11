@@ -25,16 +25,16 @@ describe('recommendModel', () => {
 		expect(rec?.presetId).toBe('glm-4-7-flash');
 	});
 
-	it('64 GB RAM → Gemma 3 27B IT', () => {
+	it('64 GB RAM → Qwen 3 30B-A3B', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 64 * GB }, 500 * GB);
-		expect(rec?.presetId).toBe('gemma3-27b-it');
+		expect(rec?.presetId).toBe('qwen3-30b-a3b');
 	});
 
-	it('128 GB RAM → still the highest-ranked preset that fits (Nemotron 30B fits at this size)', () => {
+	it('128 GB RAM → Nemotron 30B (highest-ranked preset that fits at this size)', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 128 * GB }, 500 * GB);
-		// 50% of 128 GB = 64 GB → Nemotron (64 GB) becomes a candidate,
-		// but Gemma 3 27B has the highest qualityRank.
-		expect(rec?.presetId).toBe('gemma3-27b-it');
+		// 50% of 128 GB = 64 GB → Nemotron (64 GB) becomes a candidate
+		// and has the highest qualityRank among the non-deprecated presets.
+		expect(rec?.presetId).toBe('nemotron-3-nano-30b');
 	});
 
 	it('low RAM (8 GB) → null (nothing fits the 50% limit)', () => {
@@ -76,9 +76,15 @@ describe('recommendModel', () => {
 		expect(rec?.presetId).toBe('qwen3-4b');
 	});
 
+	it('excludes both deprecated Gemma presets from recommendations', () => {
+		const recommended = recommendModel(MODEL_PRESETS, { systemRamMB: 128 * GB }, 500 * GB);
+		expect(recommended?.presetId).not.toBe('gemma3-4b-it');
+		expect(recommended?.presetId).not.toBe('gemma3-27b-it');
+	});
+
 	it('prefers quality over speed among fitting candidates', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 40 * GB);
-		// Both Qwen 3 4B (rank 2) and Gemma 3 4B (rank 1) fit; Qwen wins.
+		// Qwen 3 4B is the available 4B recommendation; Gemma 3 4B is deprecated.
 		expect(rec?.presetId).toBe('qwen3-4b');
 	});
 
