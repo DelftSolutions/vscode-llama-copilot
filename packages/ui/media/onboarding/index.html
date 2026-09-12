@@ -1,0 +1,968 @@
+<!--
+================================================================================
+  Llama Copilot — Onboarding Wizard Webview
+================================================================================
+
+  THIS FILE IS STATIC MARKUP. It holds every screen of the wizard as a
+  <section data-screen="..."> plus a <style> block. All interactivity lives in
+  two scripts (loaded after this file, injected by the host):
+      - media/js/webview-core.js            (shared kernel — see its header)
+      - media/onboarding/wizard-controller.js   (this view's controller)
+  All logic (downloading, model recommendation, server lifecycle, persistence)
+  lives in the extension host:
+      - src/onboarding/onboarding.ts   (orchestrator — owns the state)
+      - src/onboarding/wizardUI.ts     (panel + the shared TS types)
+      - src/onboarding/wizardHtml.test.ts  (contract test — guards these files)
+
+  How it is loaded
+  ----------------
+  `OnboardingWizardPanel.reveal()` (wizardUI.ts) reads this file,
+  wizard-controller.js, and webview-core.js from disk, replaces four bare
+  placeholder tokens, and assigns the result to `webview.html`:
+      __LLAMA_WEBVIEW_SCRIPTS__          (inside the HTML) -> two <script src>
+          tags pointing at webview-origin URIs (asWebviewUri) of the core and
+          the controller — core FIRST, controller second
+      __LLAMA_ONBOARDING_ICON_URL__      (the img src)     -> the webview URI
+          of llama-icon-light.png (raw string, it sits inside a quoted
+          attribute)
+      __LLAMA_ONBOARDING_ICON_URL_DARK__ (the img src)     -> the webview URI
+          of llama-icon-dark.png — the dark-theme mark, swapped in via
+          Tailwind's dark: variant. Both SVGs are the official llama.brand
+          icon assets (attribution: README.md).
+      __LLAMA_TAILWIND_CSS__             (inside <style>)  -> the generated
+          Tailwind CSS utilities (media/onboarding/tailwind.css)
+  Do not reference these files from anywhere else without updating
+  wizardUI.ts. Note: this file is a TEMPLATE, not standalone HTML — the
+  script placeholder is not executable outside VS Code by design.
+
+--------------------------------------------------------------------------------
+  THE PROTOCOL (one direction at a time)
+--------------------------------------------------------------------------------
+
+  HOST → WEBVIEW  (one message type only)
+
+      panel.webview.postMessage({ type: 'setState', state })
+
+  `state` is ALWAYS the complete `WizardState` object (see wizardUI.ts).
+  The host sends the full state on every change — never patches. The core
+  forwards it to `WizardController.applyState(state)`, which toggles the
+  matching <section> (via `hidden`) and fills its dynamic targets.
+
+  Fields of `state` (all fields are always present — never optional in
+  practice, `null`/`false`/`[]` are the "empty" values):
+
+      step: 'mode' | 'downloading' | 'model' | 'starting' | 'done'
+          Which screen to render. applyState() switches on this.
+
+      // Screen 1 (mode)
+      selectedMode: 'managed' | 'advanced' | 'skip' | null
+          Which option card is highlighted (.selected class).
+
+      // Screen 1.1 (downloading)
+      downloadPercent: number | null     0..100, or null while connecting
+      downloadError:   { title, detail } | null   categorized error, or null
+
+      // Screen 2 (model)
+      hardwareLine:    string            e.g. "M3 Pro · 18 GB RAM · 40 GB free disk"
+      recommendedReason: string | null   the "why this model" clarification
+      models:          WizardModelOption[]
+          { id, displayName, minRamMB, exceedsRam, isRecommended }
+      selectedPresetId: string | null    the model card the user picked
+      showAllModels:   boolean           whether the extra list is expanded
+
+      // Screen 3 (starting)
+	      systemChecked:   boolean           checkmark 1 — the hardware probe
+	                                          (RAM/disk/CPU/GPU) ran on the model
+	                                          screen; the host sets it together
+	                                          with step 'starting'
+      serverStarted:   boolean           checkmark 2 — the host clears it
+                                          when the server fails, so the
+                                          check is never shown as done while
+                                          an error is displayed
+      loadingModelName: string | null    set once the model is loading
+      startError:      { title, detail } | null   or null while healthy; while
+                                          set, the webview paints the server
+                                          checkmark as failed (✗) — the
+                                          system check is unaffected
+
+  WEBVIEW → HOST  (the `WizardAction` union, wizardUI.ts)
+
+      post({ type: 'ready' })              once, after the controller booted
+                                           (posted by webview-core.js — see
+                                           lifecycle below)
+      post({ type: 'selectMode', mode })   user clicked an option card
+      post({ type: 'continue' })           user clicked Continue (screen 1)
+      post({ type: 'back' })               user clicked Back
+      post({ type: 'retry' })             user clicked Retry (error screens)
+      post({ type: 'selectModel', presetId })  user clicked a model card
+      post({ type: 'toggleShowAll' })      user clicked See/Hide other models
+      post({ type: 'start' })             user clicked Start (screen 2)
+      post({ type: 'close' })             user clicked Close (screen 3) —
+                                           the server keeps starting in the
+                                           background; the wizard resumes
+                                           next launch
+      post({ type: 'openChat' })          user clicked Open Chat (done screen)
+
+  Actions are declared on the elements themselves:
+      data-action="wizard#selectMode"             (click, implicit)
+      data-action="change->mm#toggleEnabled"      (explicit event + controller)
+  webview-core.js routes them (delegated on the app root) to a method of
+  wizard-controller.js, which posts the matching action. Because routing is
+  delegated, cards cloned from <template>s need no rebinding.
+
+--------------------------------------------------------------------------------
+  LIFECYCLE — the `ready` handshake (do not remove!)
+--------------------------------------------------------------------------------
+
+  1. Host creates the panel and sets `webview.html` (this file + the two
+     injected scripts).
+  2. Any `setState` messages posted between panel creation and script
+     startup are LOST — the webview has no listeners yet.
+  3. webview-core.js boots the controller and posts `{ type: 'ready' }`.
+  4. The host responds by re-sending the full current state, so the webview
+     always converges to the correct screen even if it started late.
+  5. The panel uses `retainContextWhenHidden: true`: hiding it does NOT
+     reload the page, so `ready` fires once per page load, and `state`
+     survives hide/show cycles.
+
+--------------------------------------------------------------------------------
+  WORKED EXAMPLE — "user clicks Continue on the mode screen"
+--------------------------------------------------------------------------------
+
+  1. WEBVIEW:  user clicks the Continue button, whose markup is
+                 <button data-action="wizard#continueStep">Continue</button>
+               webview-core.js' delegated click listener calls
+               WizardController.prototype.continueStep(element, event),
+               which posts { type: 'continue' }.
+  2. HOST:     onboarding.ts handleAction({ type: 'continue' })
+               - persists step 'downloading'
+               - calls updateState({ step: 'downloading', ... })
+                 → posts { type: 'setState', state: { step: 'downloading',
+                    downloadPercent: null, ... } }
+               - starts the binary download
+  3. WEBVIEW:  the core's message listener calls applyState(); the
+               downloading section is unhidden, the progress fill painted.
+  4. HOST:     download progress callback → updateState({ downloadPercent: 42 })
+               → another full setState message (percent 42).
+  5. HOST:     download succeeds → updateState({ step: 'model', models: [...],
+               selectedPresetId: 'qwen3-4b', ... }) → the controller clones
+               a card per model from the <template> and marks the selection.
+
+  Adding a new clickable element (example):
+      HTML:    <button data-action="wizard#doThing">Do thing</button>
+      JS:      (in wizard-controller.js)
+               doThing() { this.post({ type: 'doThing' }); }
+      Then (in the TS side, not here): add `{ type: 'doThing' }` to the
+      WizardAction union in wizardUI.ts, handle it in onboarding.ts
+      handleAction(), and add 'doThing' to WIZARD_ACTION_TYPES — the
+      contract test enforces the webview side of that.
+
+--------------------------------------------------------------------------------
+  RULES — read before editing (the contract test checks several of these)
+--------------------------------------------------------------------------------
+
+  1. NEVER rename a message `type` string. The host matches on exact strings
+     (WizardAction / WizardState in wizardUI.ts). If you must add an action,
+     follow the worked example above.
+  2. NEVER add `<script src=...>`, `<link>`, or any http(s):// resource.
+     VS Code webview CSP blocks remote content and the panel would break
+     silently. The two webview scripts are injected by the host through the
+     __LLAMA_WEBVIEW_SCRIPTS__ placeholder (webview-origin URIs only).
+  3. The controller fills dynamic (non-hardcoded) text with textContent /
+     setAttribute only — never build HTML strings with dynamic data
+     (model names, error details) via innerHTML.
+  4. Screens are static <section data-screen> elements toggled with `hidden`;
+     repeated items (model cards) come from <template> clones. Do not cache
+     DOM nodes across applyState calls — re-query every time.
+  5. Style with the brand token block at the top of the <style> section
+     (--max-* role tokens, which also remap the --vscode-* neutrals this
+     panel consumes) so the panel follows light/dark themes. The only fixed
+     layout values are the card width and progress-bar dimensions.
+  6. The webview must stay a pure view: no fetch(), no localStorage, no
+     timers that drive logic, no knowledge of ports/paths/versions. If you
+     find yourself wanting state here, it belongs in onboarding.ts.
+  7. To add a screen: add the step value to WizardStep + WIZARD_STEPS
+     (wizardUI.ts), write the <section> here, add an applyState() branch in
+     wizard-controller.js, and document the new state fields in the block
+     above. New actions follow the worked example.
+  8. Run `npm test` after changes — wizardHtml.test.ts validates the
+     protocol contract of all three webview files.
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Llama Copilot Setup</title>
+	<style>
+		/* Tailwind directives — the CLI replaces these with the generated utilities. */
+		__LLAMA_TAILWIND_CSS__
+
+		/* ------------------------------------------------------------------
+		   Brand tokens — the wizard's own palette (orange accent, blue
+		   selection, brown neutrals). Replaces the old hardcoded teal.
+
+		   --max-base-*  (:root, theme-independent)  — the raw palette ramps.
+		   --max-* roles + --vscode-* remaps (body)  — light theme.
+		   The dark block below re-derives the roles for dark themes.
+
+		   The --vscode-* remaps are declared on body, not :root: VS Code
+		   injects its own --vscode-* :root style into the webview and the
+		   source order relative to this block is not guaranteed, but a
+		   direct declaration on body always beats the value inherited from
+		   :root — so the brand neutrals win in both themes, in the real
+		   webview and in the browser preview alike. The dark block lists
+		   both elements VS Code may carry the vscode-dark class on.
+		------------------------------------------------------------------- */
+		:root {
+			/* raw palette */
+			--max-base-white: #FAFAFA;
+			--max-base-black: #111111;
+
+			--max-base-orange: #DC652A;
+			--max-base-orange-light-3: #F8E0D4;
+			--max-base-orange-light-2: #F1C1AA;
+			--max-base-orange-light-1: #E7936A;
+			--max-base-orange-dark-1: #A54C20;
+			--max-base-orange-dark-2: #793717;
+			--max-base-orange-dark-3: #4D230F;
+
+			--max-base-red: #DB0900;
+			--max-base-red-light-3: #F8CECC;
+			--max-base-red-light-2: #F19D99;
+			--max-base-red-light-1: #E6534D;
+			--max-base-red-dark-1: #A40700;
+			--max-base-red-dark-2: #780500;
+			--max-base-red-dark-3: #4D0300;
+
+			--max-base-blue: #95BBDB;
+			--max-base-blue-light-3: #EAF1F8;
+			--max-base-blue-light-2: #D5E4F1;
+			--max-base-blue-light-1: #B5CFE6;
+			--max-base-blue-dark-1: #708CA4;
+			--max-base-blue-dark-2: #526778;
+			--max-base-blue-dark-3: #34414D;
+
+			--max-base-teal: #6DDBD3;
+			--max-base-teal-light-3: #E2F8F6;
+			--max-base-teal-light-2: #C5F1ED;
+			--max-base-teal-light-1: #99E6E0;
+			--max-base-teal-dark-1: #52A49E;
+			--max-base-teal-dark-2: #3C7874;
+			--max-base-teal-dark-3: #264D4A;
+
+			--max-base-brown: #877A74;
+			--max-base-brown-light-3: #E7E4E3;
+			--max-base-brown-light-2: #CFCAC7;
+			--max-base-brown-light-1: #ABA29E;
+			--max-base-brown-dark-1: #655C57;
+			--max-base-brown-dark-2: #4A4340;
+			--max-base-brown-dark-3: #2F2B29;
+		}
+
+		/* Light theme: role tokens + the neutral VS Code tokens this panel
+		   consumes, rebranded to the palette above. */
+		body {
+			--max-progress-fill: var(--max-base-blue-dark-2);
+			--max-step-active: var(--max-base-black);
+			--max-step-active-background: var(--max-base-brown-light-3);
+			--max-step-active-border: var(--max-base-black);
+			--max-disabled-button-color: var(--max-base-brown-dark-1);
+			--max-disabled-button-border: var(--max-base-brown-dark-1);
+			--max-btn-background: var(--max-base-brown-light-3);
+			--max-btn-border: var(--max-base-orange);
+			--max-btn-color: var(--max-base-orange);
+			--max-btn-hover-background: var(--max-base-brown-light-2);
+			--max-btn-hover-border: var(--max-base-orange-dark-1);
+			--max-btn-hover-color: var(--max-base-orange-dark-1);
+			--max-btn-secondary-color: var(--max-base-orange);
+			--max-btn-secondary-border: var(--max-base-brown-light-3);
+			--max-btn-secondary-hover-background: var(--max-base-brown-light-2);
+			--max-btn-secondary-hover-color: var(--max-base-orange-dark-1);
+			--max-link-btn-color: var(--max-base-orange);
+			--max-link-btn-hover-color: var(--max-base-orange-dark-1);
+			/* Checkmarks use the active step number's tokens exactly. */
+			--max-check-background: var(--max-step-active-background);
+			--max-check-border: var(--max-step-active-border);
+			--max-check-color: var(--max-step-active);
+			--max-model-card-hover: var(--max-base-blue);
+			--max-model-selected-border: var(--max-base-blue-light-1);
+			--max-model-selected-background: var(--max-base-blue-light-2);
+
+			--vscode-foreground: var(--max-base-black);
+			--vscode-descriptionForeground: var(--max-base-brown-dark-2);
+			--vscode-editor-background: var(--max-base-brown-light-3);
+			--vscode-widget-border: var(--max-base-brown-light-1);
+			--vscode-input-background: var(--max-base-blue-light-1);
+			--vscode-badge-background: var(--max-base-orange);
+			--vscode-inputValidation-errorBackground: var(--max-base-red-light-3);
+			--vscode-inputValidation-errorForeground: var(--max-base-red-dark-3);
+			--vscode-inputValidation-errorBorder: var(--max-base-red-light-2);
+		}
+
+		/* Dark theme — VS Code puts the vscode-dark class on the webview's
+		   html element or on body; cover both. */
+		body.vscode-dark,
+		:root.vscode-dark body {
+			--max-progress-fill: var(--max-base-teal);
+			--max-step-active: var(--max-base-white);
+			--max-step-active-background: var(--max-base-brown-dark-3);
+			--max-step-active-border: var(--max-base-brown-light-1);
+			--max-disabled-button-color: var(--max-base-brown-light-1);
+			--max-disabled-button-border: var(--max-base-brown-light-1);
+			--max-btn-background: var(--max-base-brown-dark-3);
+			--max-btn-border: var(--max-base-orange);
+			--max-btn-color: var(--max-base-orange);
+			--max-btn-hover-background: var(--max-base-brown-dark-2);
+			--max-btn-hover-border: var(--max-base-orange-light-1);
+			--max-btn-hover-color: var(--max-base-orange-light-1);
+			--max-btn-secondary-color: var(--max-base-orange);
+			--max-btn-secondary-border: var(--max-base-brown-dark-3);
+			--max-btn-secondary-hover-background: var(--max-base-brown-dark-2);
+			--max-btn-secondary-hover-color: var(--max-base-orange-light-1);
+			--max-link-btn-color: var(--max-base-orange);
+			--max-link-btn-hover-color: var(--max-base-orange-light-1);
+			/* Checkmarks use the active step number's tokens exactly. */
+			--max-check-background: var(--max-step-active-background);
+			--max-check-border: var(--max-step-active-border);
+			--max-check-color: var(--max-step-active);
+			--max-model-card-hover: var(--max-base-teal);
+			--max-model-selected-border: var(--max-base-teal-dark-2);
+			--max-model-selected-background: var(--max-base-teal-dark-3);
+
+			--vscode-foreground: var(--max-base-white);
+			--vscode-descriptionForeground: var(--max-base-brown-light-2);
+			--vscode-editor-background: var(--max-base-brown-dark-3);
+			--vscode-widget-border: var(--max-base-brown-dark-1);
+			--vscode-input-background: var(--max-base-teal-dark-2);
+			--vscode-badge-background: var(--max-base-orange);
+			--vscode-inputValidation-errorBackground: var(--max-base-red-dark-3);
+			--vscode-inputValidation-errorForeground: var(--max-base-red-light-3);
+			--vscode-inputValidation-errorBorder: var(--max-base-red-dark-2);
+		}
+
+		body {
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+			color: var(--vscode-foreground);
+			background: var(--vscode-editor-background);
+			margin: 0;
+			padding: 24px 42px;
+			display: flex;
+		}
+
+		[hidden] {
+			display: none !important;
+		}
+
+		h1 {
+			font-size: 1.3em;
+			font-weight: 600;
+			margin: 0 0 16px;
+		}
+
+		.main-text-content {
+			font-size: 1em;
+			margin-bottom: 16px;
+		}
+
+		.subtitle {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin: 0 0 16px;
+		}
+
+		.card {
+			max-width: 1000px;
+			width: 100%;
+		}
+
+
+		.sidebar {
+			border-right: 1px solid var(--vscode-widget-border);
+			max-width: 260px;
+			width: 100%;
+		}
+
+		.step {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			padding: 8px 10px;
+			border-radius: 6px;
+			font-size: 1em;
+			color: var(--vscode-descriptionForeground);
+			cursor: default;
+		}
+
+		.step .step-num {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			box-sizing: border-box;
+			width: 20px;
+			height: 20px;
+			border-radius: 50%;
+			border: 1px solid var(--vscode-descriptionForeground);
+			font-size: 13px;
+			font-weight: 600;
+			flex-shrink: 0;
+		}
+
+		.step.active {
+			color: var(--max-step-active);
+			font-size: 1.10em;
+			font-weight: 600;
+		}
+
+		.step.active .step-num {
+			background: var(--max-step-active-background);
+			border: 2px solid var(--max-step-active);
+		}
+
+		.screen {
+			padding-left: 16px;
+			flex: 1;
+		}
+
+		.option,
+		.model-card {
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+			padding: 12px;
+			cursor: pointer;
+		}
+
+		.option {
+			margin-bottom: 10px;
+		}
+
+		.model-card {
+			margin-bottom: 8px;
+		}
+
+		.option:hover,
+		.model-card:hover {
+			border-color: var(--max-model-card-hover);
+		}
+
+		.option.selected,
+		.model-card.selected {
+			border-color: var(--max-model-selected-border);
+			background: var(--max-model-selected-background);
+		}
+
+		.model-card.disabled {
+			opacity: 0.55;
+			cursor: not-allowed;
+		}
+
+		.title {
+			font-weight: 600;
+		}
+
+		.desc {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin-top: 2px;
+		}
+
+		.ram-info {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin-top: 4px;
+		}
+
+		.note {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin-top: 10px;
+			line-height: 1.4;
+		}
+
+		/* Model screen: a three-band spacing scale — tight gaps INSIDE a
+		   band (heading+hardware, card+reason, link+footer) and one even
+		   20px gap BETWEEN bands, so the eye groups elements by the
+		   whitespace instead of every gap competing at 10–16px. */
+		[data-screen="model"] h1 {
+			margin-bottom: 6px;
+			/* header band: the hardware line is context for the heading, */
+		}
+
+		.hardware {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 20px;
+		}
+
+		.reason {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin: 0 0 20px 4px;
+		}
+
+		.badge {
+			display: inline-block;
+			background: transparent;
+			border-color: var(--vscode-badge-background);
+			border: 1px solid;
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			font-weight: 600;
+			padding: 2px 8px;
+			border-radius: 10px;
+			margin-left: 8px;
+			vertical-align: middle;
+			white-space: nowrap;
+		}
+
+		.progress-track {
+			height: 6px;
+			border-radius: 3px;
+			background: var(--vscode-input-background, rgba(128, 128, 128, 0.25));
+			overflow: hidden;
+			margin: 4px 0 6px;
+		}
+
+		.progress-fill {
+			height: 100%;
+			background: var(--max-progress-fill);
+			width: 0%;
+			transition: width 0.2s ease;
+		}
+
+		.progress-indeterminate .progress-fill {
+			width: 40%;
+			transition: none;
+			animation: slide 1.2s ease-in-out infinite;
+		}
+
+		@keyframes slide {
+			0% {
+				margin-left: -40%;
+			}
+
+			100% {
+				margin-left: 100%;
+			}
+		}
+
+		.percent {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		/* Theme-aware error banner — the inputValidation tokens give a soft
+	   tinted background with dark-red text in light themes and a muted
+	   dark red with light-red text in dark themes (the same palette VS Code
+	   uses for validation messages), so the block follows the active theme
+	   instead of being a fixed bright red in both. */
+		.error-block {
+			background: var(--vscode-inputValidation-errorBackground, #fbd8d8);
+			color: var(--vscode-inputValidation-errorForeground, #6c1919);
+			border: 1px solid var(--vscode-inputValidation-errorBorder, #f48771);
+			padding: 10px 12px;
+			border-radius: 4px;
+			margin: 12px 0;
+		}
+
+		.error-block .err-title {
+			color: var(--vscode-inputValidation-errorForeground, #6c1919);
+			font-weight: 600;
+			margin-bottom: 4px;
+		}
+
+		.error-block .err-title::before {
+			content: "\26A0\FE0E";
+			/* ⚠ text-presentation — inherits the error foreground.*/
+			display: inline-block;
+			width: 14px;
+			margin-right: 6px;
+		}
+
+		.error-block .err-detail {
+			font-size: 0.8em;
+			line-height: 1.4;
+			margin-left: 20px;
+		}
+
+		.checks {
+			list-style: none;
+			padding: 0;
+			margin: 0 0 16px;
+		}
+
+		.checks li {
+			padding: 6px 0;
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.checks li.pending {
+			color: var(--vscode-descriptionForeground);
+			opacity: 0.6;
+		}
+
+
+		.check {
+			width: 16px;
+			height: 16px;
+			border-radius: 50%;
+			background: var(--max-check-background);
+			border: 1px solid var(--max-check-border);
+			color: var(--max-check-color);
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 10px;
+			flex-shrink: 0;
+		}
+
+		.check.empty {
+			background: transparent;
+			border: 1px solid var(--vscode-descriptionForeground);
+		}
+
+		/* Failed check (server check while startError is set) — reuses the
+		   inputValidation tokens so the ✗ matches the .error-block banner
+		   in both themes. Full opacity: a failure must not read as pending. */
+		.checks li.error {
+			color: var(--vscode-inputValidation-errorForeground);
+			opacity: 1;
+		}
+
+		.check.error {
+			background: var(--vscode-inputValidation-errorBackground);
+			border: 1px solid var(--vscode-inputValidation-errorBorder);
+			color: var(--vscode-inputValidation-errorForeground);
+		}
+
+		.footer {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-top: 20px;
+			padding-top: 14px;
+			border-top: 1px solid var(--vscode-widget-border);
+			gap: 8px;
+		}
+
+		/* Primary button — brand accent (token block above): tinted fill,
+	   accent outline + text, bold weight, so it still reads as the
+	   preferred action over the transparent .secondary-btn. */
+		button {
+			background: var(--max-btn-background);
+			border: 1px solid var(--max-btn-border);
+			color: var(--max-btn-color);
+			font-weight: 600;
+			padding: 5px 16px;
+			border-radius: 2px;
+			cursor: pointer;
+			font-size: var(--vscode-font-size);
+		}
+
+		button:hover {
+			background: var(--max-btn-hover-background);
+			color: var(--max-btn-hover-color);
+			border-color: var(--max-btn-hover-border);
+		}
+
+		button:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		/* Back/Retry — one notch quieter than the primary: faded accent
+	   outline + text, normal weight, so the primary clearly wins. */
+		.secondary-btn {
+			background: transparent;
+			color: var(--max-btn-secondary-color);
+			border-color: var(--max-btn-secondary-border);
+			font-weight: 400;
+		}
+
+		.secondary-btn:hover {
+			background: var(--max-btn-secondary-hover-background);
+			color: var(--max-btn-secondary-hover-color);
+		}
+
+		.disabled-btn {
+			background: transparent;
+			color: var(--max-disabled-button-color);
+			border: none;
+		}
+
+		.disabled-btn:hover {
+			background: transparent;
+			color: var(--max-disabled-button-color);
+			border: none;
+		}
+
+		.link-btn {
+			/* display:block (buttons are inline-block by default, whose
+			   margins don't collapse) so the gap to the footer below and to
+			   the other-model cards when expanded each resolve to a single
+			   even margin instead of the summed pair. */
+			display: block;
+			background: none;
+			border: none;
+			color: var(--max-link-btn-color);
+			cursor: pointer;
+			padding: 0;
+			font-size: var(--vscode-font-size);
+			margin: 0 0 8px;
+			/* actions band: 8px to the footer divider (and to the list it
+			   toggles when expanded) */
+		}
+
+		.link-btn:hover {
+			background: none;
+			color: var(--max-link-btn-hover-color);
+			text-decoration: underline;
+		}
+
+		.done {
+			text-align: center;
+			padding: 24px 0;
+		}
+
+		.done img {
+			width: 72px;
+			height: 72px;
+			margin-bottom: 16px;
+		}
+
+		.done h1 {
+			margin-bottom: 8px;
+		}
+	</style>
+</head>
+
+<body>
+	<div class="card" data-controller="wizard" style="display: flex">
+		<!-- Sidebar — .sidebar (in the <style> block above) draws the 1px
+	     divider at its right edge: theme-aware --vscode-widget-border,
+	     same line the .footer rule uses. -->
+		<div class="sidebar relative flex flex-col gap-y-5 overflow-y-auto bg-background px-2 pb-2">
+			<div class="relative flex h-16 shrink-0 items-center">
+				<!-- The brand ships one mark per background (llama.brand
+				     icon/ assets); dark: swaps the visible one with the theme. -->
+				<img src=__LLAMA_ONBOARDING_ICON_URL__ alt="llama.cpp logo"
+					class="icon-light h-12 w-auto dark:hidden" />
+				<img src=__LLAMA_ONBOARDING_ICON_URL_DARK__ alt="llama.cpp logo"
+					class="icon-dark h-12 w-auto hidden dark:block" />
+			</div>
+			<nav class="relative flex flex-1 flex-col">
+				<!-- data-step lists the WizardSteps an entry covers; the
+				     controller toggles .active in showScreen().
+				     list-none: the .step-num badges ARE the
+				     numbers — the UA list markers would double them
+				     (preflight is off in tailwind.config.js). -->
+				<ol role="list" class="m-0 flex list-none flex-1 flex-col gap-y-3 p-0">
+					<li>
+						<span class="step" data-wizard-target="sidebarStep" data-step="mode downloading">
+							<span class="step-num">1</span>
+							Getting llama-server ready
+						</span>
+					</li>
+					<li>
+						<span class="step" data-wizard-target="sidebarStep" data-step="model">
+							<span class="step-num">2</span>
+							Picking a model
+						</span>
+					</li>
+					<li>
+						<span class="step" data-wizard-target="sidebarStep" data-step="starting">
+							<span class="step-num">3</span>
+							Starting your model
+						</span>
+					</li>
+					<li data-wizard-target="sshSidebarStep" hidden>
+						<span class="step" data-wizard-target="sidebarStep" data-step="remote done">
+							<span class="step-num">4</span>
+							Remote access
+						</span>
+					</li>
+				</ol>
+			</nav>
+		</div>
+
+
+
+
+		<!-- Main content -->
+		<!--<div class="py-10 lg:pl-72">-->
+		<div data-wizard-target="loading">Loading...</div>
+
+		<!-- Screen 1: mode selection -->
+		<section data-screen="mode" data-wizard-target="screen" hidden class="screen">
+			<h1>How do you want to run your local model?</h1>
+			<div class="option" data-mode="managed" data-wizard-target="option" data-action="wizard#selectMode">
+				<div class="title">We download everything and start it for you</div>
+				<div class="desc">Recommended. We fetch llama-server, pick a model that fits your machine, and start
+					it
+					for you.</div>
+			</div>
+			<div class="option" data-mode="skip" data-wizard-target="option" data-action="wizard#selectMode">
+				<div class="title">Skip, not now</div>
+				<div class="desc">You can run the setup later from the command palette: “Llama Copilot: Run Setup”.
+				</div>
+			</div>
+			<div class="option" data-mode="advanced" data-wizard-target="option" data-action="wizard#selectMode">
+				<div class="title">I'll bring my own server (Advanced)</div>
+				<div class="desc">Point the extension at an existing llama-server endpoint in Settings.</div>
+			</div>
+			<div class="note">* Managed mode starts a background process, auto-starts it on every VS Code launch,
+				enables binary auto-update, and occupies port 8013.</div>
+			<div class="footer">
+				<button class="disabled-btn" disabled>Back</button>
+				<button data-action="wizard#continueStep">Continue</button>
+			</div>
+		</section>
+
+		<!-- Screen 1.1: binary download -->
+		<section data-screen="downloading" data-wizard-target="screen" hidden class="screen">
+			<h1>Getting llama-server ready</h1>
+			<div class="main-text-content">Downloading llama-server from GitHub (~100 MB)</div>
+			<div class="progress-track">
+				<div class="progress-fill" data-wizard-target="progressFill"></div>
+			</div>
+			<div class="percent" data-wizard-target="progressLabel">Connecting...</div>
+			<div class="error-block" data-wizard-target="downloadError" hidden>
+				<div class="err-title"></div>
+				<div class="err-detail"></div>
+			</div>
+			<div class="footer">
+				<button class="secondary-btn" data-action="wizard#back">Back</button>
+				<button data-wizard-target="retryDownload" data-action="wizard#retry" hidden>Retry</button>
+			</div>
+		</section>
+
+		<!-- Screen 2: model picker. Cards are cloned from the <template> below
+	     by the controller (one per state.models entry, recommended first). -->
+		<section data-screen="model" data-wizard-target="screen" hidden class="screen">
+			<h1>Pick your model</h1>
+			<div class="main-text-content" data-wizard-target="hardware" hidden></div>
+			<div data-wizard-target="modelList"></div>
+			<div class="reason" data-wizard-target="recommendedReason" hidden></div>
+			<button class="link-btn" data-wizard-target="showAll" data-action="wizard#toggleShowAll" hidden></button>
+			<div data-wizard-target="otherModels" hidden></div>
+			<template data-wizard-target="modelCardTemplate">
+				<div class="model-card" data-action="wizard#selectModel">
+					<div class="title"></div>
+					<div class="ram-info"></div>
+				</div>
+			</template>
+			<div class="footer">
+				<button class="secondary-btn" data-action="wizard#back">Back</button>
+				<button data-wizard-target="start" data-action="wizard#start" disabled>Start</button>
+			</div>
+		</section>
+
+		<!-- Screen 3: starting -->
+		<section data-screen="starting" data-wizard-target="screen" hidden class="screen">
+			<h1>Starting your model</h1>
+			<ul class="checks">
+				<li data-wizard-target="systemCheck" class="pending">
+					<span class="check empty" data-wizard-target="systemCheckMark"></span><span>Checked your
+						system</span>
+				</li>
+				<li data-wizard-target="serverCheck" class="pending">
+					<span class="check empty" data-wizard-target="serverCheckMark"></span><span>Started
+						llama-server</span>
+				</li>
+			</ul>
+			<div class="error-block" data-wizard-target="startError" hidden>
+				<div class="err-title"></div>
+				<div class="err-detail"></div>
+			</div>
+			<div class="subtitle" data-wizard-target="startStatus" hidden></div>
+			<div class="progress-track progress-indeterminate" data-wizard-target="startProgress" hidden>
+				<div class="progress-fill"></div>
+			</div>
+			<div class="note" data-wizard-target="startNote" hidden>It can take a while on the first run — the model
+				is
+				downloaded to your machine. You can close this panel and check back later; the status bar keeps
+				working.
+			</div>
+			<div class="footer">
+				<button class="secondary-btn" data-action="wizard#retry">Retry</button>
+				<button data-action="wizard#close">Close</button>
+			</div>
+		</section>
+
+		<!-- Screen 4: remote (SSH tunnel setup) -->
+		<section data-screen="remote" data-wizard-target="screen" hidden class="screen">
+			<div class="screen-content" style="padding: 2rem; max-width: 640px; margin: 0 auto;">
+				<h1 style="margin-bottom: 0.5rem;">SSH Tunnel Setup</h1>
+				<p class="subtitle" style="margin-bottom: 1.5rem;">
+					Your server is running on your local machine (port <span data-wizard-target="sshLocalPort"></span>).
+					To use it in this remote session, we need to add an SSH tunnel
+					so the remote host can reach your local server.
+				</p>
+
+				<div style="margin-bottom: 1rem;">
+					<strong>Forwards to add to ~/.ssh/config for host "<span data-wizard-target="sshHostName"></span>":</strong>
+				</div>
+
+				<div data-wizard-target="forwardsList" style="margin-bottom: 1.5rem; font-family: var(--vscode-editor-font-family, monospace); font-size: 13px; line-height: 1.6;"></div>
+
+				<div data-wizard-target="sshDiffPreview" style="margin-bottom: 1.5rem; padding: 0.75rem; border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; overflow-x: auto; max-height: 200px; overflow-y: auto;" hidden></div>
+
+				<div data-wizard-target="sshError" hidden style="margin-bottom: 1rem; padding: 0.75rem; border: 1px solid var(--vscode-errorForeground); border-radius: 4px; color: var(--vscode-errorForeground);">
+					<strong data-wizard-target="sshErrorTitle"></strong>
+					<div data-wizard-target="sshErrorDetail" style="margin-top: 0.25rem; font-size: 0.9em;"></div>
+				</div>
+
+				<div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.5rem;">
+					<button data-action="wizard#skipSSH" style="background: transparent; border: 1px solid var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);">Skip, I'll do it manually</button>
+					<button data-action="wizard#configureSSH">Apply &amp; Continue</button>
+				</div>
+			</div>
+		</section>
+
+		<!-- Screen 5: done (context-aware) -->
+		<section data-screen="done" data-wizard-target="screen" hidden class="screen">
+			<!-- Variant A: Local session / tunnels working -->
+			<div class="done" data-wizard-target="doneLocal">
+				<img src="__LLAMA_ONBOARDING_ICON_URL__" alt="" class="icon-light dark:hidden">
+				<img src="__LLAMA_ONBOARDING_ICON_URL_DARK__" alt="" class="icon-dark hidden dark:inline">
+				<h1>Your local model works.</h1>
+				<div class="subtitle">Open chat and type your first request.</div>
+				<button data-action="wizard#openChat">Open Chat</button>
+			</div>
+
+			<!-- Variant B: Remote session, SSH config patched (needs reconnect) -->
+			<div class="done" data-wizard-target="doneReconnect" hidden>
+				<img src="__LLAMA_ONBOARDING_ICON_URL__" alt="" class="icon-light dark:hidden">
+				<img src="__LLAMA_ONBOARDING_ICON_URL_DARK__" alt="" class="icon-dark hidden dark:inline">
+				<h1>Almost there — reconnect to activate the tunnel.</h1>
+				<div class="subtitle">The SSH config has been updated. The new RemoteForward lines
+				take effect on the next SSH connection.</div>
+				<button data-action="wizard#reconnect">Reconnect Now</button>
+				<div class="subtitle" style="margin-top: 1rem; font-size: 0.85em; opacity: 0.7;">
+					Reconnecting will reload this window. Your server keeps running in the background.
+				</div>
+			</div>
+
+			<!-- Variant C: Remote session, SSH setup skipped -->
+			<div class="done" data-wizard-target="doneManual" hidden>
+				<img src="__LLAMA_ONBOARDING_ICON_URL__" alt="" class="icon-light dark:hidden">
+				<img src="__LLAMA_ONBOARDING_ICON_URL_DARK__" alt="" class="icon-dark hidden dark:inline">
+				<h1>Server is running locally.</h1>
+				<div class="subtitle">Add the following to your SSH config and reconnect to
+				use your model in this remote session:</div>
+				<pre data-wizard-target="manualForwardLines" style="margin: 1rem 0; padding: 0.75rem; border-radius: 4px; border: 1px solid var(--vscode-widget-border); font-size: 13px;"></pre>
+				<div class="subtitle" style="font-size: 0.85em; opacity: 0.7;">The lines have been copied to your clipboard.</div>
+				<button data-action="wizard#openChat" style="margin-top: 1rem;">Open Chat (manual endpoints only)</button>
+			</div>
+		</section>
+		<!--</div>-->
+	</div>
+	__LLAMA_WEBVIEW_SCRIPTS__
+</body>
+
+</html>

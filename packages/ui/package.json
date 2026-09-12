@@ -1,0 +1,83 @@
+{
+	"name": "llama-copilot-ui",
+	"publisher": "delft-solutions",
+	"displayName": "Llama Copilot - Server Manager",
+	"description": "Manages the llama-server process on your local machine. Companion to Copilot for llama-server LLMs.",
+	"version": "2.0.0",
+	"icon": "llama-icon-light.png",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/DelftSolutions/vscode-llama-copilot"
+	},
+	"engines": {
+		"vscode": "^1.104.0"
+	},
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"extensionKind": [
+		"ui"
+	],
+	"extensionDependencies": [],
+	"categories": [
+		"Other"
+	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "llamaCopilot.startServer",
+				"title": "Llama Copilot: Start Server"
+			},
+			{
+				"command": "llamaCopilot.stopServer",
+				"title": "Llama Copilot: Stop Server"
+			},
+			{
+				"command": "llamaCopilot.restartServer",
+				"title": "Llama Copilot: Restart Server"
+			},
+			{
+				"command": "llamaCopilot.updateBinary",
+				"title": "Llama Copilot: Update llama-server Binary"
+			},
+			{
+				"command": "llamaCopilot.manageModels",
+				"title": "Llama Copilot: Manage Models"
+			},
+			{
+				"command": "llamaCopilot.editModelsIni",
+				"title": "Llama Copilot: Edit models.ini"
+			},
+			{
+				"command": "llamaCopilot.onboarding",
+				"title": "Llama Copilot: Run Setup"
+			},
+			{
+				"command": "llamaCopilot.configureSSHForward",
+				"title": "Llama Copilot: Configure SSH Forwards"
+			},
+			{
+				"command": "llamaCopilot.revertSSHConfig",
+				"title": "Llama Copilot: Revert SSH Config"
+			}
+		]
+	},
+	"main": "./out/extension.js",
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "npm run build:css && tsc -b && node ../../scripts/bundle-extension.js .",
+		"build:css": "npx tailwindcss -c ../../tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css && npx tailwindcss -c ../../tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css",
+		"watch": "tsc -b --watch",
+		"test": "vitest run",
+		"package": "npx @vscode/vsce package --no-dependencies"
+	},
+	"devDependencies": {
+		"@llama-copilot/shared": "*",
+		"@types/vscode": "^1.104.0",
+		"@vscode/dts": "^0.4.1",
+		"tailwindcss": "^3.4.19",
+		"typescript": "^5.9.2",
+		"vitest": "^4.0.18"
+	}
+}

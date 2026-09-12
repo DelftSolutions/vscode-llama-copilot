@@ -1,0 +1,21 @@
+{
+	"name": "@llama-copilot/shared",
+	"version": "1.0.0",
+	"private": true,
+	"main": "./out/index.js",
+	"types": "./out/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./out/index.d.ts",
+			"default": "./out/index.js"
+		}
+	},
+	"scripts": {
+		"compile": "tsc -b",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.2",
+		"vitest": "^4.0.18"
+	}
+}

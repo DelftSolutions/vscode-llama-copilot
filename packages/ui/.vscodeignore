@@ -1,0 +1,11 @@
+src/**
+node_modules/**
+**/*.test.ts
+**/*.test.js
+tsconfig.json
+tsconfig.tsbuildinfo
+vitest.config.ts
+media/onboarding/input.css
+media/models-manager/input.css
+.gitignore
+**/*.map
