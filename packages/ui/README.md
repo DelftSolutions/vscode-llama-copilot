@@ -1,53 +1,69 @@
-# Copilot for llama-server LLMs
+# Llama Copilot — Server Manager
 
-A VS Code extension that integrates [llama-server](https://github.com/ggml-org/llama.cpp) LLMs as language model chat providers, enabling local AI-powered coding assistance directly in VS Code.
+Companion extension that downloads, runs, and manages a local [llama-server](https://github.com/ggml-org/llama.cpp) instance. Bundled with [Copilot for llama-server LLMs](https://marketplace.visualstudio.com/items?itemName=delft-solutions.llama-copilot) and installed automatically as part of its extension pack.
 
-> **Note**: This extension has no affiliation with llama.cpp or its maintainers. It is an independent third-party extension that provides integration with llama-server.
+> **Note**: This extension has no affiliation with llama.cpp or its maintainers.
 
-Before using this extension, you need to install and run `llama-server` from the [llama.cpp](https://github.com/ggml-org/llama.cpp) project. Follow the [quick start guide](https://github.com/ggml-org/llama.cpp#quick-start) to get started.
+## Getting Started
 
-### Installing llama.cpp
+Run the command **Llama Copilot: Run Setup** to open the onboarding wizard. It offers three paths:
 
-You can install `llama.cpp` in several ways:
+| Mode | What happens |
+|------|-------------|
+| **Managed** (recommended) | Downloads the llama-server binary, lets you pick a model from built-in presets, and starts the server automatically. The chat extension receives a `managed` endpoint — no manual configuration needed. |
+| **Advanced** | Skips managed setup. You install and run llama-server yourself and configure `llamaCopilot.endpoints` in VS Code settings (see the [chat extension README](https://marketplace.visualstudio.com/items?itemName=delft-solutions.llama-copilot)). |
+| **Skip** | Dismisses the wizard. You can re-run it any time. |
 
-- **Using package managers**: Install using `brew`, `nix`, or `winget`
-- **Docker**: Run with Docker - see the [Docker documentation](https://github.com/ggml-org/llama.cpp#quick-start)
-- **Pre-built binaries**: Download from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
-- **Build from source**: Clone the repository and build - check out the [build guide](https://github.com/ggml-org/llama.cpp#quick-start)
+After choosing **Managed**, the wizard walks you through:
 
-Once installed, you'll need a model to work with. Head to the [Obtaining and quantizing models](https://github.com/ggml-org/llama.cpp#obtaining-and-quantizing-models) section to learn more.
+1. **Binary download** — fetched from the llama.cpp GitHub releases for your platform.
+2. **Model selection** — recommended based on your hardware (RAM, GPU). Pick a preset or enable additional models.
+3. **Server start** — the server launches in the background; a status-bar item shows its state.
 
-## Starting llama-server
+In remote (SSH) sessions the wizard also offers to configure `RemoteForward` entries in your SSH config so the remote VS Code instance can reach the locally running server.
 
-After installing `llama.cpp`, you need to start `llama-server` with your models configured. Here's an example startup script (see `examples/start-llms`):
+## Commands
 
-```bash
-#!/bin/bash
+All commands are available via the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
-llama-server --port 8013 --models-preset ./models.ini --timeout 3600
-```
+| Command | Description |
+|---------|-------------|
+| **Llama Copilot: Run Setup** | Open the onboarding wizard. |
+| **Llama Copilot: Start Server** | Start the managed llama-server. |
+| **Llama Copilot: Stop Server** | Stop the managed llama-server. |
+| **Llama Copilot: Restart Server** | Restart the managed llama-server. |
+| **Llama Copilot: Update llama-server Binary** | Check for a newer llama-server release and install it. |
+| **Llama Copilot: Manage Models** | Open the Models Manager to toggle presets on or off. |
+| **Llama Copilot: Edit models.ini** | Open the raw `models.ini` file in the editor. |
+| **Llama Copilot: Configure SSH Forwards** | Add `RemoteForward` entries to your SSH config for remote sessions. |
+| **Llama Copilot: Revert SSH Config** | Undo SSH config changes made by the extension. |
 
-### Key Flags
+## Settings
 
-- `--port`: Specifies the port on which the server will listen (default: 8080)
-- `--models-preset`: Path to your models configuration file (INI format)
-- `--timeout`: How long in seconds processing can take without any output to the client. Increase this alongside with the [Request timeout (extension setting)](#request-timeout) if you get timeouts.
+Settings live under `llamaCopilot.server.*` in VS Code settings (`settings.json`).
 
-The server will start and load models according to your configuration. Make sure the server is running before configuring the VS Code extension.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `server.managed` | `false` | Enable managed mode. When on, the extension downloads, starts, and auto-restarts llama-server. |
+| `server.port` | `8013` | Port the managed server listens on. |
+| `server.stopOnDeactivate` | `true` | Kill the server when VS Code closes. Set to `false` to keep it running between sessions. |
+| `server.autoUpdate` | `true` | Automatically update the binary when a new llama.cpp release is available. |
+| `server.extraArgs` | `[]` | Additional CLI arguments passed to llama-server (e.g. `["--gpu-layers", "99"]`). |
+| `server.manageModels` | — | Shortcut link in Settings UI that opens the Models Manager. |
 
-## Model Configuration
+## Models Manager
 
-Models are configured using an INI file format. See `examples/models.ini` for a complete example. Here's an example for a MacBook with 128GB RAM:
+The Models Manager (**Llama Copilot: Manage Models**) lets you toggle built-in presets on or off. Each preset defines a model with recommended settings (context size, sampling parameters, quantization). The manager writes a `models.ini` that the managed server loads with `--models-preset`.
+
+Presets that exceed your system RAM are dimmed. You can still enable them manually.
+
+To hand-edit the configuration, run **Llama Copilot: Edit models.ini**. User-added sections (those without a `; managed:` tracking comment) are preserved across manager updates.
+
+### models.ini Format
+
+Each section defines one model. Refer to [the llama-server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) for all available keys.
 
 ```ini
-[nemotron-3-nano-30b]
-jinja = true
-ctx-size = 256000
-temp = 1.0
-top-p = 1.00
-fit = on
-hf = unsloth/Nemotron-3-Nano-30B-A3B-GGUF:BF16
-
 [qwen3-4b]
 jinja = true
 ctx-size = 32768
@@ -56,290 +72,9 @@ min-p = 0.0
 top-p = 0.95
 top-k = 20
 hf = unsloth/Qwen3-4B-128K-GGUF:Q8_K_XL
-
-[glm-4-7-flash]
-jinja = true
-ctx-size = 202752
-temp = 0.7
-top-p = 1.0
-min-p = 0.01
-repeat-penalty = 1.0
-hf = unsloth/GLM-4.7-Flash-GGUF:BF16
 ```
 
-### Configuration Options
-
-Please look at the modelfile accompanying your model for the settings to use. All available settings can be found in [the llama-server readme](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
-
-### Memory Considerations
-
-Make sure to pick models and context sizes that work with your machine.
-
-- **Context size**: Larger context sizes require more RAM
-  - 1,000,000 tokens ≈ 133GB RAM
-  - 256,000 tokens ≈ 33GB RAM
-  - 128,000 tokens ≈ 17GB RAM
-  - 32,768 tokens ≈ 4GB RAM
-
-- **Quantization**: Smaller quantizations use less RAM
-  - BF16: 2× model size (30b model => 60GB)
-  - Q8_0: 1× model size
-  - Q4_0: 0.5× model size
-  - Q1_0: 0.125× model size
-
-## VS Code Extension Configuration
-
-Configure the extension by adding endpoint settings to your VS Code settings (File → Preferences → Settings, or edit `settings.json` directly).
-
-### Basic Configuration
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013"
-    }
-  }
-}
-```
-
-### Endpoint Identifiers
-
-Each endpoint has an identifier (e.g., `"local"`). Models from that endpoint will be displayed with the suffix `@identifier` (e.g., `my-model@local`). This allows you to:
-
-- Connect to multiple llama-server instances
-- Distinguish between models from different endpoints
-- Configure different settings per endpoint
-
-### Multiple Endpoints
-
-You can configure multiple endpoints:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013"
-    },
-    "remote": {
-      "url": "http://192.168.1.100:8080",
-      "apiToken": "your-api-token-here"
-    }
-  }
-}
-```
-
-## Parameter Overrides
-
-You can override generation parameters (temperature, top_p, etc.) at both the endpoint and model level. These overrides are merged into the request body sent to llama-server.
-
-### Endpoint-Level Overrides
-
-Apply parameters to all models on an endpoint:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "requestBody": {
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "top_k": 40,
-        "min_p": 0.01,
-        "repeat_penalty": 1.1,
-        "max_tokens": 2048
-      }
-    }
-  }
-}
-```
-
-### Model-Level Overrides
-
-Override parameters for specific models. Model-level `requestBody` properties override endpoint-level properties:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "requestBody": {
-        "temperature": 0.7,
-        "top_p": 0.95
-      },
-      "models": {
-        "my-model": {
-          "requestBody": {
-            "temperature": 0.6,
-            "top_p": 0.9,
-            "top_k": 40
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-In this example, `my-model` will use `temperature: 0.6`, `top_p: 0.9`, and `top_k: 40`, while other models on the `local` endpoint will use `temperature: 0.7` and `top_p: 0.95`.
-
-### Common Parameters
-
-- `temperature` (number): Controls randomness (0.0 = deterministic, 2.0 = very creative)
-- `top_p` (number): Nucleus sampling threshold (0.0 to 1.0)
-- `top_k` (number): Top-k sampling (number of tokens to consider)
-- `min_p` (number): Minimum probability threshold
-- `repeat_penalty` (number): Penalty for repeating tokens (1.0 = no penalty, >1.0 = penalty)
-- `max_tokens` (number): Maximum number of tokens to generate
-
-## Advanced Configuration
-
-### Headers
-
-Add custom headers for authentication or other purposes:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "headers": {
-        "X-Custom-Header": "value"
-      },
-      "models": {
-        "my-model": {
-          "headers": {
-            "X-Model-Specific": "value"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Model-level headers override endpoint-level headers.
-
-### API Token Authentication
-
-For authenticated endpoints:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "secure": {
-      "url": "https://api.example.com",
-      "apiToken": "your-bearer-token-here"
-    }
-  }
-}
-```
-
-The token will be sent as `Authorization: Bearer <token>` in all requests.
-
-### Request timeout
-
-The extension uses a **Request timeout** (Settings → Llama Copilot → **Request timeout (seconds)**) for how long it waits for the server to respond. This should be at least as large as the `--timeout` you pass to `llama-server`. If you see proxy or stream timeouts, increase the extension timeout and ensure `llama-server` is started with `--timeout` (e.g. `--timeout 3600`).
-
-### Context Size Overrides
-
-Override the context size for a specific model:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "models": {
-        "large-model": {
-          "contextSize": 256000
-        }
-      }
-    }
-  }
-}
-```
-
-### Max Output Tokens Overrides
-
-Override the maximum output tokens:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "models": {
-        "my-model": {
-          "maxOutputTokens": 4096
-        }
-      }
-    }
-  }
-}
-```
-
-### Thinking Budget
-
-Reasoning models can consume their entire output budget on thinking, leaving nothing for the actual answer. The extension automatically sets `thinking_budget_tokens` on each chat request to prevent this. The budget is computed as a fraction of the effective `max_tokens`.
-
-The default fraction is `0.5` (half of `max_tokens` reserved for thinking). You can override it per endpoint or per model with `thinkingBudgetFraction`. Values above `1` disable the automatic budget entirely.
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "thinkingBudgetFraction": 0.5,
-      "models": {
-        "qwen3-4b": {
-          "thinkingBudgetFraction": 0.3
-        },
-        "non-reasoning-model": {
-          "thinkingBudgetFraction": 2
-        }
-      }
-    }
-  }
-}
-```
-
-Model-level `thinkingBudgetFraction` overrides endpoint-level. An explicit `thinking_budget_tokens` in `requestBody` always takes precedence over the auto-computed value. Note that if llama-server was started with `--reasoning-budget` (other than `-1`), per-request budgets have no effect.
-
-### Capabilities Configuration
-
-For models discovered from llama-server, capabilities are inferred automatically:
-
-- **`imageInput`**: Set to `true` when the model is started with `--image-min-tokens` (vision/multimodal support in llama.cpp).
-- **`toolCalling`**: Defaults to `true` for chat models.
-
-You can override these per model in VS Code settings:
-
-```json
-{
-  "llamaCopilot.endpoints": {
-    "local": {
-      "url": "http://localhost:8013",
-      "models": {
-        "multimodal-model": {
-          "capabilities": {
-            "imageInput": true,
-            "toolCalling": true
-          }
-        },
-        "tool-model": {
-          "capabilities": {
-            "toolCalling": 10
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-To enable vision on llama-server, add `image-min-tokens` to your model preset (see [llama-server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)):
+To enable vision on a model, add `image-min-tokens`:
 
 ```ini
 [my-vision-model]
@@ -349,206 +84,68 @@ image-min-tokens = 512
 hf = your-org/your-vision-model-GGUF:Q8_0
 ```
 
-- `imageInput` (boolean): Whether the model supports image input. Auto-detected from `--image-min-tokens` when listed by the server; override in settings if needed (e.g. for config-only models not returned by `/models`).
-- `toolCalling` (boolean | number): Whether the model supports tool calling. Can be a boolean or a number (maximum number of tools)
+### Memory Considerations
 
-## Inline completions (ghost text)
+Pick models and context sizes that fit your machine.
 
-The extension can show inline (ghost) completions in the editor using the llama-server **/infill** endpoint. This requires a **FIM-capable model** (fill-in-the-middle), such as the [Sweep next-edit](https://huggingface.co/sweepai/sweep-next-edit-1.5B) models.
+- **Context size** (approximate additional RAM):
+  - 1,000,000 tokens ≈ 133 GB
+  - 256,000 tokens ≈ 33 GB
+  - 128,000 tokens ≈ 17 GB
+  - 32,768 tokens ≈ 4 GB
 
-### Setup
+- **Quantization** (relative to parameter count):
+  - BF16: 2× model size (30B → ~60 GB)
+  - Q8_0: ~1× model size
+  - Q4_0: ~0.5× model size
+  - Q1_0: ~0.125× model size
 
-1. **Configure an endpoint** and ensure llama-server is running with a FIM-capable model loaded (see below).
-2. Set **Inline completion model** in Settings → Llama Copilot to a model ID including the endpoint, e.g. `sweep-next-edit-1.5b@local`. If this setting is empty, inline completions are disabled.
+## Remote / SSH Sessions
 
-### llama-server setup for FIM
+When you open a remote SSH workspace, VS Code runs the workspace (chat) extension on the remote host while the Server Manager runs locally. The managed server listens on `127.0.0.1:<port>` on your local machine, so the remote host needs a tunnel to reach it.
 
-Your server must be running with a model that supports FIM tokens. Add one of the following to your `models.ini` and load it (e.g. with `llama-server --port 8013 --models-preset ./models.ini --timeout 3600`):
+The extension can configure this automatically:
 
-**sweep-next-edit-1.5b:**
+1. **Proactive check** — on activation in an SSH session, the extension inspects your SSH config and offers to add `RemoteForward` entries if they are missing.
+2. **Manual** — run **Llama Copilot: Configure SSH Forwards** to set up or update forwards at any time.
+3. **Revert** — run **Llama Copilot: Revert SSH Config** to undo the changes.
 
-```ini
-[sweep-next-edit-1.5b]
-jinja = true
-ctx-size = 0
-temp = 0.7
-top-p = 0.8
-top-k = 20
-hf = sweepai/sweep-next-edit-1.5B:latest
-```
+Forwards are derived from the managed server port and any endpoints with private/local URLs.
 
-**sweep-next-edit-0.5b:**
+## Advanced: Bring Your Own Server
 
-```ini
-[sweep-next-edit-0.5b]
-jinja = true
-ctx-size = 0
-temp = 0.7
-top-p = 0.8
-top-k = 20
-hf = sweepai/sweep-next-edit-0.5B:Q8_0
-```
+If you prefer to install and run llama-server yourself:
 
-### Inline completion settings
+1. Install llama.cpp via `brew`, `nix`, `winget`, [pre-built binaries](https://github.com/ggml-org/llama.cpp/releases), or [from source](https://github.com/ggml-org/llama.cpp#quick-start).
+2. Start the server with your models:
+   ```bash
+   llama-server --port 8013 --models-preset ./models.ini --timeout 3600
+   ```
+3. In the onboarding wizard choose **Advanced**, or configure `llamaCopilot.endpoints` manually in the [chat extension settings](https://marketplace.visualstudio.com/items?itemName=delft-solutions.llama-copilot).
 
-| Setting | Description |
-|--------|-------------|
-| **Inline completion model** | Model ID (e.g. `sweep-next-edit-1.5b@local`). Empty = disabled. |
-| **Inline completion timeout (ms)** | Request timeout; no suggestion is shown on timeout. |
-| **Inline completion debounce (ms)** | Delay before sending an automatic (as-you-type) request. |
-| **Max input bytes** | Maximum total input size (prefix + suffix + context) sent to the server. |
-| **Include context** | When enabled, include content from other open tabs to improve suggestions. |
-| **Inline completion prompt** | Text sent as the `/infill` `prompt` field (after the FIM middle marker). Default nudges short completions; clear to omit. Endpoint or model `requestBody.prompt` overrides this. |
-| **Debug: Inline completion** | Log requests, cancellations, and errors to the "Llama Server API" output. |
-
-## Cursor Rules Integration
-
-The extension includes a built-in tool that gives the LLM access to your project's cursor rules from `.cursor/rules/`. This allows the model to access project-specific guidelines, coding standards, and best practices automatically.
-
-### How It Works
-
-1. **Rule Discovery**: The extension automatically reads all `.md` and `.mdc` files from `.cursor/rules/` in your workspace
-2. **Glob Matching**: Rules with glob patterns in their frontmatter are matched against:
-   - File attachments (e.g., `@src/logger.ts:32`)
-   - User messages
-   - Assistant messages
-   - Tool call parameters (first 1024 bytes)
-3. **Session Scoping**: Available rules are tracked per chat session. When a glob matches, that rule becomes available for that conversation
-4. **Tool Exposure**: When rules are available, a `get-project-rule` tool is automatically exposed to the LLM
-
-### Rule File Format
-
-Rules can be simple markdown files (`.md`) or markdown files with frontmatter (`.mdc`):
-
-**Simple rule** (`.md`):
-```markdown
-# Coding Guidelines
-
-Always use TypeScript strict mode.
-Prefer async/await over promises.
-```
-
-**Rule with frontmatter** (`.mdc`):
-```markdown
----
-description: "TypeScript coding standards"
-globs: ["**/*.ts", "**/*.tsx"]
-alwaysApply: false
----
-
-# TypeScript Guidelines
-
-- Use strict mode
-- Prefer interfaces over types for object shapes
-- Use const assertions where appropriate
-```
-
-### Glob Pattern Matching
-
-Glob patterns are converted to regex patterns:
-- `*` matches any characters except path separators: `[a-zA-Z0-9.~@+=_|-]`
-- `**` matches any characters including path separators: `[a-zA-Z0-9.~@+=_|\/-]`
-- Both Windows (`\`) and Unix (`/`) path separators are supported
-
-### Tool Usage
-
-When rules are available, the LLM can call the `get-project-rule` tool:
-
-```
-get-project-rule(rule: "coding-guidelines.md,style/markdown.mdc")
-```
-
-The tool supports:
-- Comma-separated rule names
-- Optional `rule:` prefix (e.g., `rule:style.md` or just `style.md`)
-- Fuzzy matching: If a rule isn't found exactly, the closest match (within Levenshtein distance 8) is used
-- Returns `<empty file>` if no matching rule is found
-
-### Configuration
-
-Enable or disable the cursor rules feature in settings:
-
-```json
-{
-  "llamaCopilot.enableCursorRules": true
-}
-```
-
-When disabled:
-- Rules are not parsed
-- The tool is not exposed to the LLM
-- No performance overhead from rule matching
-
-### Example
-
-1. Create a rule file `.cursor/rules/typescript.md`:
-```markdown
-# TypeScript Rules
-
-Always use explicit return types for functions.
-Prefer `interface` over `type` for object shapes.
-```
-
-2. Create a rule with glob matching `.cursor/rules/react-components.mdc`:
-```markdown
----
-description: "React component guidelines"
-globs: ["**/*.tsx", "src/components/**"]
----
-
-# React Components
-
-- Use functional components with hooks
-- Extract complex logic into custom hooks
-- Use React.memo for expensive components
-```
-
-3. When you mention a file matching the glob (e.g., `@src/components/Button.tsx`), the rule becomes available to the LLM automatically
-
-## Usage
-
-### Selecting Models
-
-1. Open the Command Palette (Ctrl+Shift+P / Cmd+Shift+P)
-2. Type "Chat: Start Session" or use the chat interface
-3. Select a model from the list (models appear as `model-name@endpoint-id`)
-
-### Using the Chat Interface
-
-- Start a chat session with a selected model
-- The extension supports tool calling if the model supports it
-- Models with image input capability can process images
-
-### Opening Settings
-
-Use the command "Open Endpoint Settings" to quickly access the configuration, or navigate to Settings and search for "llamaCopilot".
+The managed flags (`--port`, `--models-preset`, `--timeout 3600`) are passed automatically in managed mode. Use `server.extraArgs` to append additional flags.
 
 ## Troubleshooting
 
-### Server Not Found
+### Binary Download Fails
+- Check your internet connection and proxy settings.
+- GitHub rate limits may apply — wait a few minutes and retry.
+- Run **Llama Copilot: Update llama-server Binary** to retry manually.
 
-- Ensure `llama-server` is running
-- Check that the URL in your configuration matches the server's address and port
-- Verify the server is accessible (try opening the URL in a browser)
+### Server Won't Start
+- Look at the **llama-server** output channel (View → Output → "llama-server") for error details.
+- Check that the port is not already in use (`server.port`, default 8013).
+- If the binary is corrupted, delete it from global storage and re-run setup.
 
-### Models Not Appearing
+### Models Not Loading
+- Open the Models Manager and verify at least one preset is enabled.
+- Run **Llama Copilot: Edit models.ini** and check for INI syntax errors.
+- Ensure the model fits in available RAM (see [Memory Considerations](#memory-considerations)).
 
-- Check that models are loaded in `llama-server` (visit `/models` endpoint)
-- Ensure models don't have "/" in their ID (these are filtered out)
-- Verify the endpoint URL is correct
-- Check the VS Code output panel for error messages (View → Output → "Llama Server API")
-
-### Configuration Errors
-
-- Validate your JSON syntax in `settings.json`
-- Ensure required fields (`url`) are present
-- Check that endpoint identifiers don't contain special characters
-
-### Parameter Overrides Not Working
-
-- Verify the parameter names match llama-server's API (check [llama-server documentation](https://github.com/ggml-org/llama.cpp))
-- Remember that model-level `requestBody` overrides endpoint-level `requestBody`
-- Check the VS Code output panel for API request/response logs
+### SSH Tunnel Not Working
+- Verify that `RemoteForward` lines appear in your SSH config for the correct host.
+- Reconnect the SSH session after changing the config.
+- Run **Llama Copilot: Configure SSH Forwards** to regenerate entries.
 
 ## Links
 
