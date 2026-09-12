@@ -3,8 +3,8 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "1.3.3",
-	"icon": "llama1-icon.png",
+	"version": "2.0.0",
+	"icon": "llama-icon-light.png",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -20,6 +20,10 @@
 	"enabledApiProposals": [
 		"languageModelThinkingPart"
 	],
+	"extensionKind": [
+		"ui",
+		"workspace"
+	],
 	"categories": [
 		"AI",
 		"Chat"
@@ -28,22 +32,46 @@
 		"languageModelChatProviders": [
 			{
 				"vendor": "llama-server",
-				"displayName": "LLaMA Server",
+				"displayName": "Llama Server",
 				"managementCommand": "llamaCopilot.openEndpointSettings"
 			}
 		],
 		"commands": [
 			{
+				"command": "llamaCopilot.onboarding",
+				"title": "Llama Copilot: Run Setup"
+			},
+			{
 				"command": "llamaCopilot.openEndpointSettings",
 				"title": "Open Endpoint Settings"
 			},
 			{
-				"command": "llamaCopilot.sendTestSmtpEmail",
-				"title": "Send Test SMTP Email"
+				"command": "llamaCopilot.startServer",
+				"title": "Llama Copilot: Start Server"
+			},
+			{
+				"command": "llamaCopilot.stopServer",
+				"title": "Llama Copilot: Stop Server"
+			},
+			{
+				"command": "llamaCopilot.restartServer",
+				"title": "Llama Copilot: Restart Server"
+			},
+			{
+				"command": "llamaCopilot.updateBinary",
+				"title": "Llama Copilot: Update llama-server Binary"
+			},
+			{
+				"command": "llamaCopilot.manageModels",
+				"title": "Llama Copilot: Manage Models"
+			},
+			{
+				"command": "llamaCopilot.editModelsIni",
+				"title": "Llama Copilot: Edit models.ini"
 			}
 		],
 		"configuration": {
-			"title": "LLaMA Server",
+			"title": "Llama Server",
 			"properties": {
 				"llamaCopilot.endpoints": {
 					"type": "object",
@@ -66,15 +94,15 @@
 									"type": "string"
 								}
 							},
-						"requestBody": {
-							"type": "object",
-							"description": "Optional JSON properties to merge into request body for this endpoint"
-						},
-						"thinkingBudgetFraction": {
-							"type": "number",
-							"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget."
-						},
-						"models": {
+							"requestBody": {
+								"type": "object",
+								"description": "Optional JSON properties to merge into request body for this endpoint"
+							},
+							"thinkingBudgetFraction": {
+								"type": "number",
+								"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget."
+							},
+							"models": {
 								"type": "object",
 								"description": "Per-model configuration. Each key is a model ID (without @endpoint suffix)",
 								"additionalProperties": {
@@ -95,15 +123,15 @@
 											"type": "number",
 											"description": "Override context size for this model (in tokens)"
 										},
-									"maxOutputTokens": {
-										"type": "number",
-										"description": "Override maximum output tokens for this model"
-									},
-									"thinkingBudgetFraction": {
-										"type": "number",
-										"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget. Overrides endpoint-level setting."
-									},
-									"capabilities": {
+										"maxOutputTokens": {
+											"type": "number",
+											"description": "Override maximum output tokens for this model"
+										},
+										"thinkingBudgetFraction": {
+											"type": "number",
+											"description": "Fraction of max_tokens to allocate to thinking (thinking_budget_tokens). Default 0.5. Values above 1 disable the thinking budget. Overrides endpoint-level setting."
+										},
+										"capabilities": {
 											"type": "object",
 											"description": "Override capabilities for this model",
 											"properties": {
@@ -157,6 +185,11 @@
 					"type": "boolean",
 					"default": true,
 					"description": "Enable cursor rules tool for LLM access to project rules from .cursor/rules/"
+				},
+				"llamaCopilot.enableToolLoopDetection": {
+					"type": "boolean",
+					"default": true,
+					"description": "Detect and break tool-call loops by pruning duplicate rounds and injecting a refusal. Disable if loop detection interferes with your workflow."
 				},
 				"llamaCopilot.inlineCompletionModel": {
 					"type": "string",
@@ -218,60 +251,37 @@
 					"default": false,
 					"description": "Enable debug logging for inline completion requests, cancellations, and errors"
 				},
-				"llamaCopilot.smtp.enabled": {
+				"llamaCopilot.server.managed": {
 					"type": "boolean",
 					"default": false,
-					"description": "When enabled, email tool results for configured tool names (e.g. runSubagent) via SMTP."
+					"markdownDescription": "Enable managed llama-server mode. Downloads and runs llama-server automatically. Once enabled, [open the Models Manager](command:llamaCopilot.manageModels) to select which models to run."
 				},
-				"llamaCopilot.smtp.host": {
-					"type": "string",
-					"default": "",
-					"description": "SMTP server hostname."
-				},
-				"llamaCopilot.smtp.port": {
+				"llamaCopilot.server.port": {
 					"type": "number",
-					"default": 587,
-					"description": "SMTP port (e.g. 587 STARTTLS, 465 TLS, or a custom port)."
+					"default": 8013,
+					"description": "Port for the managed llama-server instance."
 				},
-				"llamaCopilot.smtp.secure": {
-					"type": "boolean",
-					"default": false,
-					"description": "If true, connect with TLS immediately (typical for port 465). If false, use STARTTLS when offered (typical for 587)."
-				},
-				"llamaCopilot.smtp.from": {
-					"type": "string",
-					"default": "",
-					"description": "From address (RFC 5322). Required when SMTP email is enabled."
-				},
-				"llamaCopilot.smtp.to": {
-					"type": "string",
-					"default": "",
-					"description": "Comma-separated recipient addresses."
-				},
-				"llamaCopilot.smtp.tls.rejectUnauthorized": {
+				"llamaCopilot.server.stopOnDeactivate": {
 					"type": "boolean",
 					"default": true,
-					"description": "Reject TLS certificates that fail verification. Set false only for testing with self-signed CAs."
+					"description": "Kill the managed llama-server when VS Code closes. Set to false to keep it running between sessions."
 				},
-				"llamaCopilot.smtp.toolNames": {
+				"llamaCopilot.server.autoUpdate": {
+					"type": "boolean",
+					"default": true,
+					"description": "Automatically update the llama-server binary when a new release is available (checks at most once per day)."
+				},
+				"llamaCopilot.server.extraArgs": {
 					"type": "array",
 					"items": {
 						"type": "string"
 					},
-					"default": [
-						"runSubagent"
-					],
-					"description": "Tool names whose results are emailed (e.g. runSubagent). Exact match."
+					"default": [],
+					"description": "Additional command-line arguments passed to the managed llama-server (e.g. [\"--rate-limit\", \"600\"])."
 				},
-				"llamaCopilot.smtp.subjectPrefix": {
-					"type": "string",
-					"default": "[llama-copilot tool]",
-					"description": "Prefix for email subjects."
-				},
-				"llamaCopilot.smtp.maxBodyChars": {
-					"type": "number",
-					"default": 500000,
-					"description": "Maximum characters for the tool result body in the email (truncation applied beyond this)."
+				"llamaCopilot.server.manageModels": {
+					"type": "null",
+					"markdownDescription": "Configure which models the managed server runs. [Open Models Manager ↗](command:llamaCopilot.manageModels)"
 				}
 			}
 		}
@@ -281,24 +291,25 @@
 		"vscode:prepublish": "npm run compile",
 		"download-api": "dts main -f && dts dev",
 		"postinstall": "npm run download-api",
-		"compile": "tsc -p ./",
+		"compile": "npm run build:css && tsc -p ./",
+		"build:css": "npx tailwindcss -c tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css && npx tailwindcss -c tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css",
+		"watch:css": "npx tailwindcss -c tailwind.config.js -i media/onboarding/input.css -o media/onboarding/tailwind.css --watch & npx tailwindcss -c tailwind.config.js -i media/models-manager/input.css -o media/models-manager/tailwind.css --watch",
 		"test": "vitest run",
 		"lint": "eslint",
 		"watch": "tsc -watch -p ./"
 	},
 	"dependencies": {
-		"nodemailer": "^6.9.16",
 		"undici": "^6.21.0"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.13.0",
 		"@stylistic/eslint-plugin": "^2.9.0",
-		"@types/nodemailer": "^6.4.17",
 		"@types/node": "^22",
 		"@types/vscode": "^1.104.0",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/vsce": "^3.7.1",
 		"eslint": "^9.13.0",
+		"tailwindcss": "^3.4.19",
 		"typescript": "^5.9.2",
 		"typescript-eslint": "^8.39.0",
 		"vitest": "^4.0.18"

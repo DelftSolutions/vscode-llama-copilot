@@ -1,0 +1,11 @@
+/* Tailwind directives — the CLI replaces these with the generated utilities. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom onboarding-only styles that don't map cleanly to Tailwind utilities. */
+
+/* [hidden] attribute must win over any author rule. */
+[hidden] {
+    display: none !important;
+}

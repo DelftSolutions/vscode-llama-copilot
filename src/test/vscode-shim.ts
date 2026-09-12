@@ -93,5 +93,3 @@ export class LanguageModelChatMessage {
 export type LanguageModelChatRequestMessage = LanguageModelChatMessage;
 
 export type PrepareLanguageModelChatModelOptions = { silent: boolean };
-
-export type Memento = unknown;
