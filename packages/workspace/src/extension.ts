@@ -72,9 +72,12 @@ function buildEffectiveEndpoints(): EndpointsConfig {
 		return getEffectiveEndpoints(normalized, allForwards, probeResults);
 	}
 
-	// Local session — get managed endpoint from UI extension API
-	if (uiApi?.getServerState() === 'running') {
-		const port = uiApi.getServerPort();
+	// Local session — always include managed endpoint when enabled.
+	// The model fetch handles unreachable servers gracefully (instant
+	// ECONNREFUSED on localhost), and refreshProviders re-runs when
+	// the server state changes via the UI extension API.
+	if (isServerManaged()) {
+		const port = uiApi?.getServerPort() ?? getServerPort();
 		normalized['managed'] = { url: `http://127.0.0.1:${port}` };
 	}
 
