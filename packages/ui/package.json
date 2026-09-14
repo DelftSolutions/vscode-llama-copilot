@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Llama Copilot - Server Manager",
 	"description": "Manages the llama-server process on your local machine. Companion to Copilot for llama-server LLMs.",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"icon": "llama-icon-package.png",
 	"license": "MIT",
 	"repository": {
