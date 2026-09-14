@@ -54,9 +54,9 @@ describe('presets', () => {
 
 	describe('getPresetById', () => {
 		it('returns a preset by id', () => {
-			const preset = getPresetById('qwen3-4b');
+			const preset = getPresetById('qwen-3.5-2b:q4-128k');
 			expect(preset).toBeDefined();
-			expect(preset!.id).toBe('qwen3-4b');
+			expect(preset!.id).toBe('qwen-3.5-2b:q4-128k');
 		});
 
 		it('returns undefined for unknown id', () => {

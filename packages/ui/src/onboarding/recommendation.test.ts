@@ -9,41 +9,45 @@ import {
 const GB = 1024;
 
 describe('recommendModel', () => {
-	it('16 GB RAM → Qwen 3 4B (matches the onboarding sketch)', () => {
+	it('16 GB RAM → Gemma 4 E4B (highest quality that fits 50% of 16 GB)', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 40 * GB);
-		expect(rec?.presetId).toBe('qwen3-4b');
+		expect(rec?.presetId).toBe('gemma-4-E4B-it:q4-128k');
 		expect(rec?.reason).toContain('16 GB RAM');
 	});
 
-	it('18 GB RAM → Qwen 3 4B (matches the onboarding sketch)', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 18 * GB }, 200 * GB);
-		expect(rec?.presetId).toBe('qwen3-4b');
-	});
-
-	it('32 GB RAM → GLM 4.7 Flash (highest quality under the 50% RAM limit)', () => {
+	it('32 GB RAM → Gemma 4 12B Q6 (highest quality under 16 GB limit)', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 32 * GB }, 200 * GB);
-		expect(rec?.presetId).toBe('glm-4-7-flash');
+		expect(rec?.presetId).toBe('gemma-4-12B-it:q6-256k');
 	});
 
-	it('low RAM (8 GB) → null (nothing fits the 50% limit)', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 8 * GB }, 100 * GB);
+	it('48 GB RAM → Gemma 4 26B-A4B Q4 (highest quality under 24 GB limit)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 48 * GB }, 200 * GB);
+		expect(rec?.presetId).toBe('gemma-4-26B-A4B-it:q4-256k');
+	});
+
+	it('96 GB RAM → Qwen 3.6 35B Q6 (highest quality on the ladder)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 96 * GB }, 200 * GB);
+		expect(rec?.presetId).toBe('qwen-3.6-35b:q6-256k');
+	});
+
+	it('low RAM (4 GB) → null (nothing fits the 50% limit)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 4 * GB }, 100 * GB);
 		expect(rec).toBeNull();
 	});
 
 	it('low free disk → null even when RAM is enough', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 4 * GB);
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 2 * GB);
 		expect(rec).toBeNull();
 	});
 
 	it('free disk below the 8 GB floor → null even when a model would fit', () => {
-		// 7 GB free: the 4B models (~5 GB) would fit, but the safety floor blocks it.
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 7 * GB);
 		expect(rec).toBeNull();
 	});
 
 	it('unknown disk (null) → recommendation based on RAM only', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, null);
-		expect(rec?.presetId).toBe('qwen3-4b');
+		expect(rec?.presetId).toBe('gemma-4-E4B-it:q4-128k');
 	});
 
 	it('excludes deprecated presets even when they fit', () => {
@@ -57,25 +61,19 @@ describe('recommendModel', () => {
 				iniLines: ['hf = example/legacy'],
 				version: 1,
 				deprecated: true,
-				successor: 'qwen3-4b',
+				successor: 'qwen-3.5-2b:q4-128k',
 			},
 		];
 		const rec = recommendModel(presets, { systemRamMB: 16 * GB }, 40 * GB);
-		expect(rec?.presetId).toBe('qwen3-4b');
-	});
-
-	it('recommends the only candidate that fits on modest RAM', () => {
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 16 * GB }, 40 * GB);
-		// 50% of 16 GB is 8 GB, so only Qwen 3 4B (5 GB min) fits; the rest need more.
-		expect(rec?.presetId).toBe('qwen3-4b');
+		expect(rec?.presetId).toBe('gemma-4-E4B-it:q4-128k');
 	});
 
 	it('uses RAM_FIT_FRACTION of total RAM as the limit', () => {
-		// 5120 MB (Qwen 3 4B min) fits exactly at 50% of 10240 MB
-		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 10240 }, 40 * GB);
-		expect(rec?.presetId).toBe('qwen3-4b');
+		// 4096 MB (Qwen 3.5 2B Q4 min) fits exactly at 50% of 8192 MB
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 8192 }, 40 * GB);
+		expect(rec?.presetId).toBe('qwen-3.5-2b:q4-128k');
 		// Just below the limit: nothing fits
-		expect(recommendModel(MODEL_PRESETS, { systemRamMB: 10239 }, 40 * GB)).toBeNull();
+		expect(recommendModel(MODEL_PRESETS, { systemRamMB: 8191 }, 40 * GB)).toBeNull();
 	});
 });
 

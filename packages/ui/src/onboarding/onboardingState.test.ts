@@ -36,7 +36,7 @@ describe('onboardingState', () => {
 				status: 'in_progress',
 				step: 'model',
 				mode: 'managed',
-				presetId: 'qwen3-4b',
+				presetId: 'qwen-3.5-2b:q4-128k',
 			};
 			await saveOnboardingState(store, data);
 			const loaded = await loadOnboardingState(store);

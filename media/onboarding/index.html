@@ -145,7 +145,7 @@
   4. HOST:     download progress callback → updateState({ downloadPercent: 42 })
                → another full setState message (percent 42).
   5. HOST:     download succeeds → updateState({ step: 'model', models: [...],
-               selectedPresetId: 'qwen3-4b', ... }) → the controller clones
+               selectedPresetId: 'gemma-4-12B-it:q6-256k', ... }) → the controller clones
                a card per model from the <template> and marks the selection.
 
   Adding a new clickable element (example):
