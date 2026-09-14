@@ -361,7 +361,9 @@ export class OnboardingOrchestrator {
 				isRecommended: p.id === rec?.presetId,
 			}));
 
-		const selectedPresetId = this.data.presetId ?? rec?.presetId ?? models[0]?.id ?? null;
+		const persistedId = this.data.presetId;
+		const validPersistedId = persistedId && getPresetById(persistedId) ? persistedId : null;
+		const selectedPresetId = validPersistedId ?? rec?.presetId ?? models[0]?.id ?? null;
 		if (selectedPresetId && this.data.presetId !== selectedPresetId) {
 			this.data.presetId = selectedPresetId;
 			await this.persist();
@@ -381,7 +383,13 @@ export class OnboardingOrchestrator {
 		const presetId = this.data.presetId;
 		if (!presetId) return;
 		const preset = getPresetById(presetId);
-		const modelName = preset?.displayName ?? presetId;
+		if (!preset) {
+			this.data.presetId = undefined;
+			await this.persist();
+			await this.prepareModelStep();
+			return;
+		}
+		const modelName = preset.displayName;
 
 		this.data.step = 'starting';
 		await this.persist();
