@@ -3,7 +3,7 @@
 	"publisher": "delft-solutions",
 	"displayName": "Copilot for llama-server LLMs",
 	"description": "VS Code extension that integrates llama-server LLMs as language model chat providers.",
-	"version": "2.0.2",
+	"version": "2.0.3",
 	"icon": "llama-icon-package.png",
 	"license": "MIT",
 	"repository": {

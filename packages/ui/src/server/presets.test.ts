@@ -50,6 +50,19 @@ describe('presets', () => {
 				}
 			}
 		});
+
+		it('every non-deprecated 256k preset has a -p3 twin with parallel=3 and ctx-size=786432', () => {
+			const kept256k = MODEL_PRESETS.filter(
+				p => !p.deprecated && p.id.includes('256k') && !p.id.endsWith('-p3')
+			);
+			for (const p1 of kept256k) {
+				const p3 = getPresetById(p1.id + '-p3');
+				expect(p3, `missing -p3 twin for ${p1.id}`).toBeDefined();
+				expect(p3!.deprecated).toBeUndefined();
+				expect(p3!.iniLines).toContain('parallel = 3');
+				expect(p3!.iniLines).toContain('ctx-size = 786432');
+			}
+		});
 	});
 
 	describe('getPresetById', () => {

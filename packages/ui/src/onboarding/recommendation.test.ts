@@ -25,9 +25,24 @@ describe('recommendModel', () => {
 		expect(rec?.presetId).toBe('gemma-4-26B-A4B-it:q4-256k');
 	});
 
-	it('96 GB RAM → Qwen 3.6 35B Q6 (highest quality on the ladder)', () => {
+	it('96 GB RAM → Qwen 3.6 27B Q6 (dense 27B beats MoE 35B at this band)', () => {
 		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 96 * GB }, 200 * GB);
-		expect(rec?.presetId).toBe('qwen-3.6-35b:q6-256k');
+		expect(rec?.presetId).toBe('qwen-3.6-27b:q6-256k');
+	});
+
+	it('128 GB RAM → Qwen 3.6 27B BF16 (top of the single-slot ladder)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 128 * GB }, 200 * GB);
+		expect(rec?.presetId).toBe('qwen-3.6-27b:bf16-256k');
+	});
+
+	it('192 GB RAM → Qwen 3.6 27B BF16 p3 (subagent variant fits)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 192 * GB }, 400 * GB);
+		expect(rec?.presetId).toBe('qwen-3.6-27b:bf16-256k-p3');
+	});
+
+	it('70 GB RAM → Gemma 4 26B-A4B Q4 p3 (subagent fits below 35B p1)', () => {
+		const rec = recommendModel(MODEL_PRESETS, { systemRamMB: 70 * GB }, 200 * GB);
+		expect(rec?.presetId).toBe('gemma-4-26B-A4B-it:q4-256k-p3');
 	});
 
 	it('low RAM (4 GB) → null (nothing fits the 50% limit)', () => {
