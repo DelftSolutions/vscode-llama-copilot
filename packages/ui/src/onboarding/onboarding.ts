@@ -50,6 +50,8 @@ export interface OnboardingDeps {
 	getBinaryManager: () => BinaryManager | undefined;
 	getModelsIniManager: () => ModelsIniManager | undefined;
 	getServerManager: () => LlamaServerManager | undefined;
+	/** Create the server manager (and its prerequisites) without starting the server. */
+	ensureServerManager: () => Promise<void>;
 	/** Ensure the server manager exists and start the server (first start). */
 	startServer: () => Promise<void>;
 	/** Kick off the background binary auto-update check (no-op if not applicable). */
@@ -410,7 +412,9 @@ export class OnboardingOrchestrator {
 			if (modelsIni) {
 				await modelsIni.enablePreset(presetId);
 			}
-			// Subscribe before starting so PID-reuse state changes are not missed
+			// Create the manager first so watchServer can subscribe,
+			// then subscribe before starting so PID-reuse state changes are not missed.
+			await this.deps.ensureServerManager();
 			this.watchServer(modelName);
 			await this.deps.startServer();
 		} catch (err) {

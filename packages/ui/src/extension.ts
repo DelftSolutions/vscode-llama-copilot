@@ -103,6 +103,7 @@ function getOnboarding(context: vscode.ExtensionContext): OnboardingOrchestrator
 			getBinaryManager: () => binaryManager,
 			getModelsIniManager: () => modelsIniManager,
 			getServerManager: () => serverManager,
+			ensureServerManager: () => ensureServerManager(context),
 			startServer: () => startServer(context),
 			runBackgroundUpdateCheck,
 			isManaged: isServerManaged,
@@ -308,7 +309,7 @@ function runBackgroundUpdateCheck(): void {
 	}
 }
 
-async function startServer(context: vscode.ExtensionContext): Promise<void> {
+async function ensureServerManager(context: vscode.ExtensionContext): Promise<void> {
 	await ensureManagers(context);
 	if (!binaryManager || !modelsIniManager) return;
 
@@ -328,6 +329,11 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
 
 		context.subscriptions.push(serverManager);
 	}
+}
+
+async function startServer(context: vscode.ExtensionContext): Promise<void> {
+	await ensureServerManager(context);
+	if (!serverManager || !modelsIniManager) return;
 
 	const hasIni = await modelsIniManager.exists();
 	if (!hasIni) return;
